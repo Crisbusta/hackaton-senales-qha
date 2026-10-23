@@ -12,9 +12,10 @@ import json
 import logging
 import time
 
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 
 from app.core.config import get_settings
+from app.shared.exceptions import IntegrationError
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +38,22 @@ _client: OpenAI | None = None
 
 
 def _get_client() -> OpenAI:
+    """Cliente con timeout corto y sin reintentos internos.
+
+    Los defaults del SDK son 600 s y 2 reintentos: con eso, un turno lento
+    deja a Twilio sin respuesta (corta a los 15 s) y Patricia no recibe
+    nada. Los reintentos los decide este módulo, que sabe cuántos quedan
+    dentro del presupuesto: uno al modelo de respaldo y, más arriba, uno de
+    validación.
+    """
     global _client
     if _client is None:
         settings = get_settings()
-        _client = OpenAI(api_key=settings.openai_api_key or None)
+        _client = OpenAI(
+            api_key=settings.openai_api_key or None,
+            timeout=settings.openai_timeout_s,
+            max_retries=0,
+        )
     return _client
 
 
@@ -88,13 +101,27 @@ def call_model(static_prompt: str, context: str, correction: str | None = None):
     model = settings.openai_model
     try:
         response = _call_one(model, messages, settings.openai_temperature)
-    except Exception as exc:
+    except OpenAIError as exc:
         logger.warning("modelo principal %s fallo (%s); usando respaldo", model, exc)
         model = settings.openai_fallback_model
-        response = _call_one(model, messages, settings.openai_temperature)
+        try:
+            response = _call_one(model, messages, settings.openai_temperature)
+        except OpenAIError as fallback_exc:
+            # Los dos modelos fallaron: es un fallo de integración, no un
+            # error interno. El webhook ya responde con su texto de
+            # respaldo; esto hace que el log lo diga bien.
+            raise IntegrationError(
+                f"both LLM models failed ({settings.openai_model}, {model})"
+            ) from fallback_exc
 
     latency_ms = int((time.monotonic() - started) * 1000)
-    output = json.loads(response.choices[0].message.content)
+    try:
+        output = json.loads(response.choices[0].message.content)
+    except (json.JSONDecodeError, TypeError, AttributeError, IndexError) as exc:
+        # El structured output no deberia dejar pasar esto, pero si el
+        # proveedor devuelve algo que no es JSON, es su problema, no un bug
+        # de este modulo.
+        raise IntegrationError(f"malformed response from {model}") from exc
     metadata = {
         "nombre": model,
         "temp": settings.openai_temperature,

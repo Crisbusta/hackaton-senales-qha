@@ -4,15 +4,45 @@ Doble uso. Primero, depurar: reconstruir por que respondio lo que respondio
 sin volver a ejecutar nada. Segundo, el pitch de T12 — mostrar una traza
 real es evidencia, no promesa.
 
-DoD de T06: no se persisten datos sensibles innecesarios. Logs locales,
-solo datos de demo, se borran al cerrar (`limpiar()`).
+La linea guarda el mensaje completo de la usuaria y la respuesta con
+cifras, asi que la traza viene **apagada** (`AGENT_TRACE_ENABLED=false`) y
+no se puede encender con `APP_ENV=production`. El identificador de
+conversacion se guarda seudonimizado: `user_id` es el telefono completo y
+no tiene por que quedar en disco. Para el pitch la traza sirve igual con un
+id opaco, porque lo que se muestra es la regla que se aplico, no quien
+escribio.
 """
 
+import hashlib
 import json
 import os
 import time
 
-RUTA = os.environ.get("CONTIGO_LOG", "turnos.jsonl")
+RUTA = "turnos.jsonl"
+
+
+def _destino(ruta=None):
+    """La ruta donde escribir, o None si la traza esta apagada.
+
+    Una ruta explicita manda (es lo que hacen los tests y el uso local);
+    si no hay ninguna, decide la configuracion.
+    """
+    if ruta:
+        return ruta
+    try:
+        from app.core.config import get_settings
+
+        ajustes = get_settings()
+    except Exception:  # pragma: no cover - sin configuracion no se traza
+        return None
+    return ajustes.agent_trace_path if ajustes.agent_trace_enabled else None
+
+
+def seudonimo(conv):
+    """Un id estable y opaco. No reversible a numero de telefono."""
+    if conv is None:
+        return None
+    return "c-" + hashlib.sha256(str(conv).encode("utf-8")).hexdigest()[:12]
 
 
 def registrar(conv, turno, entrada, prefiltro, estado_antes, contexto,
@@ -21,7 +51,7 @@ def registrar(conv, turno, entrada, prefiltro, estado_antes, contexto,
     """Los tres campos que hacen que esto sirva: regla_aplicada, validadores
     y override."""
     linea = {
-        "conv": conv,
+        "conv": seudonimo(conv),
         "turno": turno,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "entrada": entrada,
@@ -39,7 +69,12 @@ def registrar(conv, turno, entrada, prefiltro, estado_antes, contexto,
         "estado_despues": estado_despues,
         "regla_aplicada": regla_aplicada,
     }
-    with open(ruta or RUTA, "a", encoding="utf-8") as f:
+    destino = _destino(ruta)
+    if destino is None:
+        # Traza apagada: la linea se devuelve igual (los tests y el pitch la
+        # usan en memoria) pero no toca el disco.
+        return linea
+    with open(destino, "a", encoding="utf-8") as f:
         f.write(json.dumps(linea, ensure_ascii=False) + "\n")
     return linea
 
@@ -79,7 +114,7 @@ def _movimientos(contexto):
 
 
 def leer(ruta=None):
-    ruta = ruta or RUTA
+    ruta = _destino(ruta) or RUTA
     if not os.path.exists(ruta):
         return []
     with open(ruta, encoding="utf-8") as f:
@@ -89,9 +124,10 @@ def leer(ruta=None):
 def traza(conv=None, ruta=None):
     """Resumen legible de una conversacion. Esto es lo que se muestra en el
     pitch: ella dijo esto, se etiqueto asi, se disparo esta regla."""
+    buscado = seudonimo(conv) if conv else None
     salida = []
     for t in leer(ruta):
-        if conv and t["conv"] != conv:
+        if buscado and t["conv"] != buscado:
             continue
         fallas = [k for k, v in t["validadores"].items() if v == "falla"]
         salida.append(
@@ -109,6 +145,6 @@ def traza(conv=None, ruta=None):
 
 
 def limpiar(ruta=None):
-    ruta = ruta or RUTA
+    ruta = _destino(ruta) or RUTA
     if os.path.exists(ruta):
         os.remove(ruta)

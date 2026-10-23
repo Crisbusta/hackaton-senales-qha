@@ -17,6 +17,7 @@ from app.modules.agent.interface import (
     Agent,
     AgentRequest,
     ConversationEvent,
+    ConversationMessage,
     ConversationMode,
     FieldStatus,
     FinancialField,
@@ -328,7 +329,9 @@ def test_every_turn_leaves_a_trace(log_path):
 
     lines = obs.leer(log_path)
     assert len(lines) == 1
-    assert lines[0]["conv"] == "demo-01"
+    # El id de conversacion es el telefono: se guarda seudonimizado.
+    assert lines[0]["conv"] == obs.seudonimo("demo-01")
+    assert "demo-01" not in json.dumps(lines[0])
     assert lines[0]["entrada"] == "gracias, chao"
     assert lines[0]["validadores"]
 
@@ -339,3 +342,128 @@ def test_llm_agent_satisfies_the_protocol(log_path):
     response = asyncio.run(agent.process(_request("cuanto es el minimo")))
 
     assert response.message.startswith("El pago minimo")
+
+
+# --- revision de backend y Codex en #5 ---------------------------------
+
+def test_calculations_do_not_escape_the_mode_filter(log_path):
+    """P1: `calculations` llega sin pasar por CAMPOS_POR_MODO. Una cifra
+    calculada en APOYO es la misma fuga que la inyeccion minima evita."""
+    fake = FakeModel([_output("Te leo.", etiqueta="tangente")])
+    run_turn(
+        _request(
+            "no doy mas",
+            mode=ConversationMode.SUPPORT,
+            financial_data={},
+            calculations={"meses_con_extra": 43},
+        ),
+        call=fake,
+        log_path=log_path,
+    )
+
+    assert "43" not in fake.last_context
+    assert "ninguno" in fake.last_context
+
+
+def test_an_unauthorised_calculation_is_not_whitelisted_either(log_path):
+    """Si el contexto no mostro la cifra, el validador tampoco la acepta:
+    las dos cosas leen el mismo diccionario filtrado."""
+    fake = FakeModel([
+        _output("Serian 43 meses.", etiqueta="disposicion_explorar"),
+        _output("Te leo, sin numeros por ahora.", etiqueta="tangente"),
+    ])
+    response = run_turn(
+        _request(
+            "cuantos meses",
+            mode=ConversationMode.SUPPORT,
+            financial_data={},
+            calculations={"meses_con_extra": 43},
+        ),
+        call=fake,
+        log_path=log_path,
+    )
+
+    assert fake.calls == 2  # el primer intento fallo la lista blanca
+    assert "43" not in response.message
+
+
+def test_installment_pause_gets_its_calculation_once_she_asks(log_path):
+    fake = FakeModel([
+        _output("Con esa cuota, el minimo pasaria a $84.350.",
+                etiqueta="intencion_compra_cuotas")
+    ])
+    run_turn(
+        _request(
+            "cuanto me subiria",
+            mode=ConversationMode.INSTALLMENT_PAUSE,
+            financial_data={
+                "minimo": FinancialField(value=74350, status=FieldStatus.CONFIRMED),
+                "minimo_con_cuota": FinancialField(
+                    value=84350, status=FieldStatus.CONFIRMED),
+            },
+            requested_installment_calculation=True,
+            calculations={"cuota_mensual": 10000},
+        ),
+        call=fake,
+        log_path=log_path,
+    )
+
+    assert "84.350" in fake.last_context
+    assert "10.000" in fake.last_context
+
+
+def test_recent_history_reaches_the_prompt(log_path):
+    """P2: sin historial, un "si" o "la segunda" no se puede interpretar."""
+    fake = FakeModel([_output("El pago minimo es $74.350.")])
+    run_turn(
+        _request(
+            "si, la segunda",
+            recent_history=[
+                ConversationMessage(role="assistant",
+                                    content="Quieres ver la fecha o el monto?"),
+                ConversationMessage(role="user", content="mmm"),
+            ],
+        ),
+        call=fake,
+        log_path=log_path,
+    )
+
+    assert "la fecha o el monto" in fake.last_context
+    assert "HISTORIAL RECIENTE" in fake.last_context
+
+
+def test_history_figures_are_masked(log_path):
+    """El historial sirve para entender la referencia, no para copiar una
+    cifra: si una cifra vieja volviera, el validador la rechazaria."""
+    fake = FakeModel([_output("Vence el 3 de noviembre de 2026.",
+                              etiqueta="solicitud_informacion")])
+    run_turn(
+        _request(
+            "y cuando vence",
+            mode=ConversationMode.DUE_DATE,
+            financial_data={
+                "vencimiento": FinancialField(
+                    value="3 de noviembre de 2026", status=FieldStatus.CONFIRMED)
+            },
+            recent_history=[
+                ConversationMessage(role="assistant",
+                                    content="Tu saldo es $1.064.000."),
+            ],
+        ),
+        call=fake,
+        log_path=log_path,
+    )
+
+    assert "1.064.000" not in fake.last_context
+    assert "Tu saldo es" in fake.last_context
+
+
+def test_the_trace_can_be_switched_off(monkeypatch, tmp_path):
+    """Guarda el mensaje completo y la respuesta con cifras: apagada por
+    defecto, y el disco no se toca."""
+    monkeypatch.chdir(tmp_path)
+    fake = FakeModel([_output("El pago minimo es $74.350.")])
+    response = run_turn(_request("cuanto es el minimo"), call=fake)  # sin log_path
+
+    assert "74.350" in response.message  # el turno responde igual
+    assert list(tmp_path.glob("*.jsonl")) == []  # pero no deja rastro en disco

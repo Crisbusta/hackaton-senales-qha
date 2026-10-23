@@ -136,6 +136,19 @@ Para correrlo de verdad hace falta `AGENT_IMPL=llm` y `OPENAI_API_KEY` en
 el `.env`. Los tests usan un modelo simulado: no gastan tokens ni salen a
 la red.
 
+El cliente usa `OPENAI_TIMEOUT_S` (6 s) y sin reintentos internos: Twilio
+corta el webhook a los 15 s, y un turno puede sumar modelo principal,
+respaldo y reintento de validación.
+
+`observability.py` deja una línea JSONL por turno, para depurar y para el
+pitch. Guarda el mensaje completo y la respuesta con cifras, así que viene
+**apagada**: se enciende con `AGENT_TRACE_ENABLED=true` en local y no se
+puede encender con `APP_ENV=production`. El id de conversación se guarda
+seudonimizado, porque `user_id` es el teléfono.
+
+Las transiciones de modo y las reglas anti-bucle están en
+[`docs/maquina-de-estados.md`](docs/maquina-de-estados.md).
+
 ## Contrato backend ↔ IA
 
 `app/modules/agent/interface.py` define `AgentRequest`, `AgentResponse`,

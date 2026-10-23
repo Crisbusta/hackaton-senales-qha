@@ -76,9 +76,31 @@ def _build_data(request: AgentRequest) -> dict:
 
 
 def _build_calculations(request: AgentRequest) -> dict:
+    """Los cálculos admisibles en este turno.
+
+    `calculations` llega del backend sin pasar por el filtro por modo, así
+    que se filtra acá por el modo y por la preferencia. Lo que esta función
+    descarta no entra al contexto ni autoriza ninguna cifra en el
+    validador: las dos cosas leen el mismo diccionario.
+    """
     if request.preferences.get(PREF_SHOW_FINANCIAL_FIGURES, True) is False:
         return {}
-    return dict(request.calculations)
+    return prompts.calculos_visibles(
+        request.mode.value,
+        request.calculations,
+        request.requested_installment_calculation,
+    )
+
+
+def _build_history(request: AgentRequest) -> list[dict]:
+    """Los últimos turnos, para resolver referencias ("sí", "la segunda").
+
+    No es fuente de cifras: `prompts` las enmascara antes de inyectarlas.
+    """
+    return [
+        {"rol": message.role, "texto": message.content}
+        for message in request.recent_history
+    ]
 
 
 def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None):
@@ -86,6 +108,7 @@ def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None
     state = _build_state(request)
     data = _build_data(request)
     calculations = _build_calculations(request)
+    history = _build_history(request)
 
     triggered, pattern = prefilter.revisar(request.message)
     context = None
@@ -112,6 +135,7 @@ def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None
             calculations or None,
             request.previous_intent,
             request.requested_installment_calculation,
+            history,
         )
         raw, metadata = call(
             prompts.ESTATICO,

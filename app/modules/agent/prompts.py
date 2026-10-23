@@ -12,6 +12,15 @@ filtrar.
 
 import json
 import os
+import re
+
+from app.modules.agent.interface import (
+    CONDITIONAL_FIELDS,
+    FIELDS_BY_MODE,
+    INSTALLMENT_CALC_FIELDS,
+    calculations_allowed,
+    fields_for_mode,
+)
 
 _AQUI = os.path.dirname(os.path.abspath(__file__))
 
@@ -20,28 +29,15 @@ with open(os.path.join(_AQUI, "static_prompt.txt"), encoding="utf-8") as f:
 
 MODOS = ("E0", "E1", "E2", "E3", "E4", "PAUSA_RECHAZO", "PAUSA_COMPRA", "APOYO", "CIERRE")
 
-# Nada fuera de esta tabla entra al contexto.
-CAMPOS_POR_MODO = {
-    "E0": (),
-    "E1": ("vencimiento",),
-    "E2": ("vencimiento", "minimo", "saldo"),
-    "E3": ("vencimiento", "minimo", "saldo",
-           "minimo_intereses", "minimo_cuotas", "minimo_abono"),
-    "E4": ("vencimiento", "minimo", "saldo", "monto_elegido"),
-    "PAUSA_RECHAZO": (),
-    "PAUSA_COMPRA": (),
-    "APOYO": (),
-    "CIERRE": (),
-}
-
-# Condicionales fuera de escalon: solo si ella pregunto en el turno anterior.
+# La tabla de campos por modo vive en interface.py: es contrato, porque el
+# backend filtra con ella antes de llamar y el agente vuelve a filtrar aca
+# como defensa en profundidad. Estos alias existen para no tener dos tablas.
+CAMPOS_POR_MODO = {str(modo): campos for modo, campos in FIELDS_BY_MODE.items()}
 CONDICIONALES = {
-    "pregunta_monto_facturado": ("facturado", ("E2", "E3", "E4")),
-    "pregunta_intereses": ("tasa", ("E3", "E4")),
+    etiqueta: (campo, tuple(str(m) for m in modos))
+    for etiqueta, (campo, modos) in CONDITIONAL_FIELDS.items()
 }
-
-# Si ella elige ver cuanto suma la cuota, el codigo agrega estos dos.
-CAMPOS_PAUSA_COMPRA_CALCULO = ("minimo", "minimo_con_cuota")
+CAMPOS_PAUSA_COMPRA_CALCULO = INSTALLMENT_CALC_FIELDS
 
 MOVIMIENTOS = {
     "E0": [
@@ -123,15 +119,37 @@ MOVIMIENTO_LINEA = "Ofrecer el *4141."
 
 def campos_visibles(modo, pregunta_previa=None, pidio_calculo_cuota=False):
     """Que campos de datos_pdf puede ver el modelo en este turno."""
-    campos = list(CAMPOS_POR_MODO.get(modo, ()))
-    if modo == "PAUSA_COMPRA" and pidio_calculo_cuota:
-        campos += [c for c in CAMPOS_PAUSA_COMPRA_CALCULO if c not in campos]
-    condicional = CONDICIONALES.get(pregunta_previa)
-    if condicional:
-        campo, modos_validos = condicional
-        if modo in modos_validos and campo not in campos:
-            campos.append(campo)
-    return campos
+    return fields_for_mode(modo, pregunta_previa, pidio_calculo_cuota)
+
+
+def calculos_visibles(modo, calculos, pidio_calculo_cuota=False):
+    """Los resultados del simulador admisibles en este turno.
+
+    `calculations` llega del backend sin pasar por el filtro por modo, asi
+    que se filtra aca: en E0 o en APOYO una cifra calculada seria
+    exactamente la fuga que la inyeccion minima evita. Lo que devuelve esta
+    funcion es tambien lo que autoriza la lista blanca numerica, para que el
+    validador no acepte una cifra que el contexto no mostro.
+    """
+    if not calculos:
+        return {}
+    if not calculations_allowed(modo, pidio_calculo_cuota):
+        return {}
+    return dict(calculos)
+
+
+_DIGITOS = re.compile(r"\d[\d.,]{2,}")
+
+
+def _enmascarar_montos(texto):
+    """Toda cifra de tres digitos o mas se reemplaza por una elipsis.
+
+    El historial esta para resolver referencias ("si", "la segunda") y para
+    que la redaccion no suene amnesica, nunca para que el modelo copie una
+    cifra de ahi. Enmascarar mantiene esa regla sin depender de que el
+    validador la ataje despues.
+    """
+    return _DIGITOS.sub("...", texto or "")
 
 
 def _formatear_valor(campo):
@@ -151,7 +169,7 @@ def _monto(valor):
 
 
 def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
-                   pidio_calculo_cuota=False):
+                   pidio_calculo_cuota=False, historial=None):
     """Los tres bloques que el codigo le pasa al modelo cada turno.
 
     Un bloque vacio se escribe igual con 'ninguno': su ausencia haria que el
@@ -175,12 +193,22 @@ def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
     lineas += ["", "DATOS_DISPONIBLES"]
     visibles = campos_visibles(modo, pregunta_previa, pidio_calculo_cuota)
     presentes = [c for c in visibles if c in (datos or {})]
-    if not presentes and not motor:
+    calculos = calculos_visibles(modo, motor, pidio_calculo_cuota)
+    if not presentes and not calculos:
         lineas.append("ninguno")
     for campo in presentes:
         lineas.append(f"{campo}: {_formatear_valor(datos[campo])}")
-    for clave, valor in (motor or {}).items():
+    for clave, valor in calculos.items():
         lineas.append(f"{clave}: {_monto(valor)}  (calculado)")
+
+    lineas += ["", "HISTORIAL RECIENTE (solo para entender a que se refiere;",
+               "las cifras vienen enmascaradas porque nunca salen de aca)"]
+    recientes = list(historial or [])[-2:]
+    if not recientes:
+        lineas.append("ninguno")
+    for turno in recientes:
+        quien = "ella" if turno.get("rol") == "user" else "tu"
+        lineas.append(f"{quien}: {_enmascarar_montos(turno.get('texto'))}")
 
     lineas += ["", "MOVIMIENTOS PERMITIDOS EN ESTE TURNO"]
     if modo == "E0" and escalon_maximo in RESUMEN_POR_ESCALON:
