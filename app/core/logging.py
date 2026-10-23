@@ -13,3 +13,8 @@ def configure_logging(level: str = "INFO") -> None:
     # Uvicorn configura sus propios loggers; los alineamos al mismo nivel.
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         logging.getLogger(name).setLevel(level.upper())
+
+
+def mask_phone(phone: str) -> str:
+    """Enmascara un número para logs: +56912345678 -> ***5678."""
+    return f"***{phone[-4:]}" if len(phone) > 4 else "***"

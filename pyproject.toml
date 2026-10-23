@@ -7,6 +7,8 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.161.1",
     "pydantic-settings>=2.16.1",
+    "python-multipart>=0.0.32",
+    "twilio>=9.12.0",
     "uvicorn[standard]>=0.54.0",
 ]
 

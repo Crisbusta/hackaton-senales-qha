@@ -22,6 +22,46 @@ curl localhost:8000/health   # {"status":"ok","service":"contigo"}
 
 Docs interactivas (Swagger): http://localhost:8000/docs
 
+## Webhook de WhatsApp (Twilio)
+
+`POST /webhooks/whatsapp` recibe mensajes de Twilio (`application/x-www-form-urlencoded`),
+valida `X-Twilio-Signature` y responde con TwiML.
+
+### Probar con el WhatsApp Sandbox
+
+1. Exponer la app local: `ngrok http 8000` → copiar la URL `https://xxxx.ngrok-free.app`.
+2. En `.env`:
+   ```bash
+   TWILIO_AUTH_TOKEN=<Auth Token de la consola Twilio>
+   PUBLIC_BASE_URL=https://xxxx.ngrok-free.app
+   ```
+3. Reiniciar la app.
+4. Twilio Console → Messaging → Try it out → WhatsApp Sandbox → *When a message comes in*:
+   `https://xxxx.ngrok-free.app/webhooks/whatsapp` (método `POST`).
+5. Unirse al sandbox desde WhatsApp (`join <palabra>`) y enviar un mensaje.
+
+### Firma y proxies
+
+Twilio firma la **URL pública exacta** que llama. Detrás de ngrok o Railway la app recibe
+otra URL (http, host interno), por eso la firma se valida contra `PUBLIC_BASE_URL` + path.
+Si `PUBLIC_BASE_URL` no coincide exactamente con lo configurado en Twilio, todas las
+solicitudes serán rechazadas con `403`.
+
+- Sin `TWILIO_AUTH_TOKEN` la app **rechaza todo** (falla cerrada).
+- `TWILIO_VALIDATE_SIGNATURE=false` permite probar con `curl` en local; la app no arranca
+  si se combina con `APP_ENV=production`.
+
+### Respuestas de error
+
+| Caso | Respuesta |
+|---|---|
+| Firma inválida o ausente | `403` |
+| Payload sin `MessageSid`/`From` o malformado | `400` |
+| Error al procesar el mensaje | `200` + TwiML con mensaje amable (sin detalles internos) |
+
+Los logs usan `MessageSid` como id de correlación, enmascaran el número (`***5678`) y
+nunca registran el contenido del mensaje.
+
 ## Tests y lint
 
 ```bash

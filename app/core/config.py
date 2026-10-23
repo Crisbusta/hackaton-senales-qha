@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +23,14 @@ class Settings(BaseSettings):
     # URL pública exacta que Twilio llama (p. ej. https://contigo.up.railway.app).
     # Necesaria para validar X-Twilio-Signature detrás de proxies.
     public_base_url: str = ""
+    # Solo para pruebas manuales locales (curl). Prohibido en producción.
+    twilio_validate_signature: bool = True
+
+    @model_validator(mode="after")
+    def _signature_validation_required_in_production(self) -> "Settings":
+        if self.is_production and not self.twilio_validate_signature:
+            raise ValueError("TWILIO_VALIDATE_SIGNATURE cannot be disabled in production")
+        return self
 
     @property
     def is_production(self) -> bool:
