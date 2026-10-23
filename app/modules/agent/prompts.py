@@ -109,6 +109,30 @@ MOVIMIENTOS_RETOMA = [
     "No le pongas 'logro' ni la felicites de mas.",
 ]
 
+# PAUSA_COMPRA cuando ella ya eligio ver el efecto y dijo el monto: el
+# calculo llega resuelto en DATOS_DISPONIBLES y lo unico que falta es
+# contarlo. Sin estos movimientos el modelo volvia a ofrecer las dos
+# opciones con la cifra ya en el contexto (C05 turno 3, medido el 23 oct:
+# "$60.000 en 6 cuotas" recibio "cual de las opciones prefieres?").
+MOVIMIENTOS_CUOTA_CALCULADA = [
+    "Contarle cuanto le sumaria esa cuota a su pago minimo, con las cifras "
+    "inyectadas: la cuota mensual y el minimo nuevo.",
+    "Decir que es un calculo ilustrativo, no una oferta del banco.",
+    "NO vuelvas a ofrecer las dos opciones: ella ya eligio y ya te dio el monto.",
+    "No le digas que no compre ni la hagas sentir mal. La decision es suya.",
+]
+
+# Estando en CIERRE, el modo se actualiza DESPUES de este turno, asi que
+# cuando ella vuelve el modelo todavia ve modo=CIERRE y se despide de
+# alguien que esta retomando (C01 turno 4, medido el 23 oct: "hola, ya
+# estoy mejor" recibio "que estes bien"). La etiqueta es correcta
+# (retoma_voluntaria); lo que faltaba era permitirle no despedirse.
+MOVIMIENTO_CIERRE_RETOMA = (
+    "Si en este mensaje ella retoma, dice que esta mejor o pide algo, NO te "
+    "despidas: acoge lo que dijo en una frase y dile que pueden seguir "
+    "cuando ella quiera."
+)
+
 # El cierre con la oferta lo permite AB2, una vez por escalon.
 MOVIMIENTO_OFERTA = ('Cerrar con "seguimos o lo dejamos aqui?" una sola vez.')
 MODOS_CON_OFERTA = ("E1", "E2", "E3")
@@ -150,6 +174,14 @@ def _enmascarar_montos(texto):
     validador la ataje despues.
     """
     return _DIGITOS.sub("...", texto or "")
+
+
+def _tiene_valor(datos, campo):
+    """Si ese campo llego con un valor usable (no ausente, no vacio)."""
+    d = (datos or {}).get(campo)
+    if not isinstance(d, dict):
+        return False
+    return d.get("valor") is not None and d.get("estado") != "ausente"
 
 
 def _formatear_valor(campo):
@@ -214,12 +246,16 @@ def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
     if modo == "E0" and escalon_maximo in RESUMEN_POR_ESCALON:
         resumen = RESUMEN_POR_ESCALON[escalon_maximo]
         movimientos = [m.format(resumen=resumen) for m in MOVIMIENTOS_RETOMA]
+    elif modo == "PAUSA_COMPRA" and _tiene_valor(datos, "minimo_con_cuota"):
+        movimientos = list(MOVIMIENTOS_CUOTA_CALCULADA)
     else:
         movimientos = list(MOVIMIENTOS[modo])
     if modo in MODOS_CON_OFERTA and estado.get("puedes_ofrecer_continuar"):
         movimientos.append(MOVIMIENTO_OFERTA)
     if modo == "APOYO" and "linea_crisis" not in limites:
         movimientos.append(MOVIMIENTO_LINEA)
+    if modo == "CIERRE":
+        movimientos.append(MOVIMIENTO_CIERRE_RETOMA)
     for m in movimientos:
         lineas.append(m if m.startswith("  ") else "- " + m)
 

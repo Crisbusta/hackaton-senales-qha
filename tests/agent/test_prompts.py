@@ -157,3 +157,48 @@ def test_retoma_con_avance_previo_reconoce_sin_repetir_cifras():
     assert "tu pago minimo y tu saldo" in salida
     assert "74.350" not in salida and "1.064.000" not in salida
     assert "logro" in salida  # la instruccion de no usar la palabra "logro"
+
+
+# --- movimientos medidos contra el modelo real (23 oct) -----------------
+
+
+def test_pausa_compra_con_el_calculo_listo_manda_contarlo():
+    """C05 turno 3: con `minimo_con_cuota` en el contexto, el modelo volvia a
+    ofrecer las dos opciones en vez de dar la cifra. Medido contra el modelo
+    real: "$60.000 en 6 cuotas" recibio "cual de las opciones prefieres?"."""
+    datos = dict(DATOS, minimo_con_cuota={"valor": 84350, "estado": "confirmado"})
+    salida = armar_contexto({"modo": "PAUSA_COMPRA"}, datos, pidio_calculo_cuota=True)
+
+    assert "cuanto le sumaria esa cuota" in salida
+    assert "NO vuelvas a ofrecer las dos opciones" in salida
+    # la oferta numerada no debe aparecer: ella ya eligio
+    assert "Esperar diez minutos" not in salida
+
+
+def test_pausa_compra_sin_el_calculo_sigue_ofreciendo_las_dos_opciones():
+    salida = armar_contexto({"modo": "PAUSA_COMPRA"}, {})
+
+    assert "Esperar diez minutos" in salida
+
+
+def test_un_calculo_ausente_no_cambia_los_movimientos():
+    """Si el campo llega ABSENT (T10 no lo calculo), no hay nada que contar."""
+    datos = dict(DATOS, minimo_con_cuota={"valor": None, "estado": "ausente"})
+    salida = armar_contexto({"modo": "PAUSA_COMPRA"}, datos, pidio_calculo_cuota=True)
+
+    assert "Esperar diez minutos" in salida
+    assert "NO vuelvas a ofrecer" not in salida
+
+
+def test_en_cierre_puede_no_despedirse_si_ella_retoma():
+    """C01 turno 4: el modo se actualiza despues del turno, asi que con
+    modo=CIERRE el modelo se despedia de alguien que volvia. Medido: "hola,
+    ya estoy mejor" recibio "que estes bien"."""
+    salida = armar_contexto({"modo": "CIERRE"}, {})
+
+    assert "NO te" in salida and "despidas" in salida
+
+
+def test_los_otros_modos_no_reciben_el_movimiento_de_retoma():
+    for modo in ("E0", "E2", "APOYO", "PAUSA_RECHAZO"):
+        assert "despidas" not in armar_contexto({"modo": modo}, {})
