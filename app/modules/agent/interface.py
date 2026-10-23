@@ -277,6 +277,17 @@ class AgentResponse(BaseModel):
     # agente. En pesos, sin decimales.
     mentioned_amount: int | None = None
 
+    # True cuando `message` NO lo redactó el modelo: es uno de los textos
+    # fijos que validó C (crisis, rechazo, no_texto) o el respaldo del modo.
+    # El backend no debe reescribirlo ni filtrarlo.
+    #
+    # Existe por un fallo real encontrado en el recorrido end-to-end: el
+    # texto de crisis contiene "*4141" y "131", el filtro de cifras de
+    # ConversationService los leyó como montos, y un mensaje de ideación
+    # suicida recibió "Dejemos los números de lado por ahora" en vez de la
+    # línea de ayuda.
+    protected_text: bool = False
+
 
 class Agent(Protocol):
     async def process(self, request: AgentRequest) -> AgentResponse: ...
