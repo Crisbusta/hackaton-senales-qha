@@ -13,6 +13,9 @@ htmlcov/
 .env.*
 !.env.example
 
+# Trazas de observabilidad del agente (datos de demo, se borran al cerrar)
+*.jsonl
+
 # Datos locales (cartolas, reportes)
 *.pdf
 data/

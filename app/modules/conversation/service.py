@@ -17,10 +17,13 @@ from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
     Agent,
     AgentRequest,
+    AgentResponse,
     ConversationEvent,
     ConversationMessage,
     ConversationMode,
+    Intent,
 )
+from app.modules.conversation import transitions
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.conversation.schemas import ConversationState, RecordedEvent, utc_now
 from app.modules.whatsapp.schemas import IncomingMessage
@@ -68,6 +71,62 @@ def contains_amount(text: str) -> bool:
 class ConversationService:
     """Implementa `MessageHandler` del módulo WhatsApp."""
 
+    @staticmethod
+    def _can_offer_continue(state: ConversationState) -> bool:
+        """AB2: una oferta de "¿seguimos?" por escalón."""
+        if state.mode not in transitions.MODOS_CON_OFERTA:
+            return False
+        return state.offers_by_mode.get(state.mode.value, 0) == 0
+
+    @staticmethod
+    def _can_clarify_route(state: ConversationState) -> bool:
+        """AB1 y AB8: una aclaración por tema, y las opciones numeradas una
+        vez cuando el reconocimiento falló dos veces seguidas.
+
+        Las dos reglas comparten el campo porque las dos son "aclarar una
+        sola vez"; si alguna vez necesitan comportamientos distintos, hace
+        falta un campo propio en el contrato.
+        """
+        if state.recognition_failures >= 2:
+            return not state.numbered_options_offered
+        return state.recognition_failures > 0
+
+    @staticmethod
+    def _apply_transition(state: ConversationState, response: AgentResponse) -> None:
+        """El modo del próximo turno, más AB6."""
+        state.mode = transitions.siguiente_modo(
+            state.mode, state.max_mode_reached, response.intent, response.event
+        )
+        state.max_mode_reached = transitions.subir_maximo(
+            state.max_mode_reached, state.mode
+        )
+
+    @staticmethod
+    def _record_anti_loop(
+        state: ConversationState,
+        response: AgentResponse,
+        reply: str,
+        previous_mode: ConversationMode,
+    ) -> None:
+        """Lo que hay que recordar para no repetirse en el próximo turno."""
+        # AB2: si la oferta salió, se consume en el escalón donde salió.
+        if previous_mode in transitions.MODOS_CON_OFERTA and "seguimos" in reply.lower():
+            key = previous_mode.value
+            state.offers_by_mode[key] = state.offers_by_mode.get(key, 0) + 1
+
+        # AB7: la línea de crisis se ofrece una vez.
+        if "*4141" in reply and transitions.LIMITE_LINEA_CRISIS not in state.stated_limits:
+            state.stated_limits.append(transitions.LIMITE_LINEA_CRISIS)
+
+        # AB8: el contador vuelve a 0 cuando entiende.
+        if response.intent == Intent.AMBIGUOUS:
+            state.recognition_failures += 1
+            if state.recognition_failures >= 2:
+                state.numbered_options_offered = True
+        else:
+            state.recognition_failures = 0
+            state.numbered_options_offered = False
+
     def __init__(
         self,
         agent: Agent,
@@ -87,12 +146,28 @@ class ConversationService:
             return None
 
         state = await self._repository.get(message.user_id)
+
+        # AB8: a un acuse vacio se responde una vez; el siguiente no recibe
+        # respuesta. Ahorra una llamada al modelo y evita el bucle de cortesia.
+        if transitions.es_acuse_vacio(message.body):
+            if state.acknowledgement_answered:
+                logger.info("Empty acknowledgement, no reply (AB8) %s", ctx)
+                return None
+            state.acknowledgement_answered = True
+        else:
+            state.acknowledgement_answered = False
+
         request = AgentRequest(
             user_id=message.user_id,
             message=message.body,
             mode=state.mode,
             recent_history=state.history[-RECENT_HISTORY_MESSAGES:],
             preferences=dict(state.preferences),
+            max_mode_reached=state.max_mode_reached,
+            previous_intent=state.last_intent,
+            can_offer_continue=self._can_offer_continue(state),
+            can_clarify_route=self._can_clarify_route(state),
+            already_stated_limits=list(state.stated_limits),
         )
 
         try:
@@ -106,9 +181,18 @@ class ConversationService:
 
         previous_mode = state.mode
         apply_event(state, response.event, message.message_sid)
+        self._apply_transition(state, response)
 
         reply = response.message
-        if state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False and contains_amount(reply):
+        # `protected_text` marca los textos fijos que validó C: la línea de
+        # crisis trae "*4141" y "131", que `contains_amount` lee como montos.
+        # Sin esta guarda, un mensaje de ideación suicida recibía
+        # NO_FIGURES_REPLY en vez de la línea de ayuda.
+        if (
+            not response.protected_text
+            and state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False
+            and contains_amount(reply)
+        ):
             logger.warning("Reply with figures blocked by user preference %s", ctx)
             reply = NO_FIGURES_REPLY
 
@@ -116,6 +200,7 @@ class ConversationService:
             ConversationMessage(role="user", content=message.body),
             ConversationMessage(role="assistant", content=reply),
         ]
+        self._record_anti_loop(state, response, reply, previous_mode)
         state.last_intent = response.intent
         state.turn_count += 1
         state.updated_at = utc_now()

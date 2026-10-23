@@ -25,6 +25,33 @@ class Settings(BaseSettings):
     # Vacío: ningún usuario tiene banco vinculado.
     mock_bank_scenario: str = "patricia"
 
+    # OpenAI (se usan cuando agent_impl="llm").
+    openai_api_key: str = ""
+    # gpt-6.1-sol principal y gpt-6-luna de respaldo: 15/16 aciertos cada
+    # uno en los 16 casos de clasificación difíciles, 3,4-4,9 s de latencia.
+    openai_model: str = "gpt-6.1-sol"
+    openai_fallback_model: str = "gpt-6-luna"
+    # Los modelos de razonamiento solo aceptan el default; el cliente omite
+    # el parámetro cuando el modelo lo rechaza.
+    openai_temperature: float = 0.3
+    # Medido contra el proveedor real: p50 ~4,5 s, pero la cola llega a 6,8 s
+    # en respuestas perfectamente válidas, así que 7 s cortaba 2 de cada 8.
+    # Cada corte degrada el turno al texto de respaldo del modo. Conviene un
+    # timeout holgado: lo que se sacrifica es el reintento de validación, que
+    # de todos modos falla hacia ese mismo texto.
+    # Tiene que seguir cabiendo en `agent_turn_budget_s`.
+    openai_timeout_s: float = 9.0
+
+    # Margen que el agente le deja al resto del turno (validar, registrar,
+    # armar el TwiML) dentro del presupuesto de `agent_timeout_s`.
+    agent_budget_margin_s: float = 1.0
+
+    # Traza del agente (una línea JSONL por turno). Guarda el mensaje
+    # completo de la usuaria y la respuesta con cifras, así que viene
+    # apagada: se enciende en local, con datos de demo.
+    agent_trace_enabled: bool = False
+    agent_trace_path: str = "turnos.jsonl"
+
     # Twilio (se usan desde feat/twilio-webhook).
     twilio_auth_token: str = ""
     # URL pública exacta que Twilio llama (p. ej. https://contigo.up.railway.app).
@@ -38,6 +65,25 @@ class Settings(BaseSettings):
         if self.is_production and not self.twilio_validate_signature:
             raise ValueError("TWILIO_VALIDATE_SIGNATURE cannot be disabled in production")
         return self
+
+    @model_validator(mode="after")
+    def _trace_disabled_in_production(self) -> "Settings":
+        # La traza guarda mensajes completos: en producción no se escribe a
+        # disco ni por error de configuración.
+        if self.is_production and self.agent_trace_enabled:
+            raise ValueError("AGENT_TRACE_ENABLED cannot be enabled in production")
+        return self
+
+    @property
+    def agent_turn_budget_s(self) -> float:
+        """Lo que el agente puede gastar antes de que el backend lo corte.
+
+        Deriva de `agent_timeout_s`, que es el `asyncio.wait_for` de
+        ConversationService: si fueran dos variables independientes y la del
+        backend quedara más baja, este presupuesto no se aplicaría nunca.
+        El dueño del plazo es el backend; acá solo se le resta el margen.
+        """
+        return self.agent_timeout_s - self.agent_budget_margin_s
 
     @property
     def is_production(self) -> bool:
