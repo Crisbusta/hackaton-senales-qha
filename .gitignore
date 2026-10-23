@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Datos locales (cartolas, reportes)
+*.pdf
+data/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
