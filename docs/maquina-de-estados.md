@@ -55,18 +55,26 @@ obedece porque las ve en el contexto; no las deduce.
 | AB5 | Salir de `APOYO` por cualquier vía que no sea `retoma_voluntaria` | el modo, que T06 no mueve |
 | AB7 | Repetir un límite ya dicho (p. ej. ofrecer el *4141 dos veces) | `already_stated_limits` |
 
-Hay dos comportamientos más ya implementados a los que **no les puedo
-poner número con certeza**, y prefiero decirlo antes que inventarlo:
+| AB6 | Repetir cifras ya vistas o retroceder en la Escalera | `max_mode_reached` (monótono) |
+| AB8 | El bucle de "no te entendí" y responder a cada "ok" | `recognition_failures`, `numbered_options_offered`, `acknowledgement_answered` |
 
-- `max_mode_reached` **solo sube**. Permite que `retoma_voluntaria`
-  reconozca lo que ella ya vio sin repetir cifras. En `interface.py` lo
-  anoté como AB6, pero ese número es mi suposición.
-- Las cifras de un escalón no reaparecen en otro: lo garantiza el filtro
-  `fields_for_mode()`, no una regla AB.
+C confirmó (T01, 23 oct) que **AB6 es la regla que ya estaba implementada**
+—los escalones solo suben— y que no hay que renumerar nada.
 
-**AB3, AB4, AB6 y AB8 no están escritas en ninguna parte a la que yo tenga
-acceso.** C es dueño de la lista (T01). Hasta que estén, T06 no debería
-asumir un comportamiento para ellas.
+**AB3 y AB4 no necesitan código hoy.** AB3 impide que Contigo ofrezca
+escribir después; AB4, que escriba primero. Como no hay nada fuera del
+webhook ni temporizador alguno, se cumplen por construcción. Si entra el
+recontacto (P1), vuelven acá: necesitan `recontacto_solicitado`,
+`recontacto_enviado` y `ultimo_mensaje_usuaria_at`, y la única salida
+permitida es un mensaje, pedido por ella, dentro de las 24 h de WhatsApp y
+sin deuda, montos ni fechas.
+
+**Una nota sobre AB1 y AB8:** las dos comparten `can_clarify_route`, porque
+las dos son "aclarar una sola vez". Si alguna vez necesitan
+comportamientos distintos, hace falta un campo propio en el contrato.
+
+Lo que **no** es una regla AB: que las cifras de un escalón no reaparezcan
+en otro. Eso lo garantiza el filtro `fields_for_mode()`.
 
 ---
 
