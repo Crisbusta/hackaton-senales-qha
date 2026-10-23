@@ -74,7 +74,7 @@ def apply_event(state: ConversationState, event: ConversationEvent | None, sid: 
     state.events.append(RecordedEvent(event=event, message_sid=sid))
 
     match event:
-        case ConversationEvent.DECLINED_BALANCE_REVIEW | ConversationEvent.AVOID_FINANCIAL_REVIEW:
+        case ConversationEvent.DECLINED_BALANCE_REVIEW:
             state.preferences[PREF_SHOW_FINANCIAL_FIGURES] = False
             state.mode = ConversationMode.PAUSE
         case ConversationEvent.REQUESTED_BALANCE:
