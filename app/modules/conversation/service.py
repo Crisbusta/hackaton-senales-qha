@@ -52,10 +52,21 @@ STEP_BY_STEP_REPLY = "Vamos de a poco. ¿Quieres que lo veamos paso a paso?"
 # Tiempo mínimo que debe quedar del presupuesto para intentar un reintento.
 MIN_RETRY_S = 3.0
 
+RESET_COMMANDS = frozenset({"/reiniciar", "/reset"})
+DEMO_RESET_REPLY = "Listo, la conversación empieza de cero. (modo demo)"
+
 # Modos cuya respuesta depende del modo y que se pueden ESTRENAR en el mismo turno:
 # al entrar, se vuelve a pedir la respuesta con el modo nuevo. PAUSA_RECHAZO y
-# APOYO no lo necesitan: responden con textos fijos según la etiqueta.
+# APOYO no lo necesitan al entrar: responden con textos fijos según la etiqueta.
 REANSWER_ON_ENTRY = (ConversationMode.INSTALLMENT_PAUSE,)
+
+# Al RETOMAR desde estos modos ("hola, ya estoy mejor" → E0), el agente redactó
+# todavía en el modo anterior (texto de pausa o despedida): se pide de nuevo en E0.
+REANSWER_ON_RESUME_FROM = (
+    ConversationMode.PAUSE,
+    ConversationMode.SUPPORT,
+    ConversationMode.CLOSING,
+)
 
 NO_FIGURES_REPLY = (
     "Dejemos los números de lado por ahora, como me pediste. Aquí estoy cuando quieras retomarlo."
@@ -74,7 +85,7 @@ def apply_event(state: ConversationState, event: ConversationEvent | None, sid: 
     state.events.append(RecordedEvent(event=event, message_sid=sid))
 
     match event:
-        case ConversationEvent.DECLINED_BALANCE_REVIEW | ConversationEvent.AVOID_FINANCIAL_REVIEW:
+        case ConversationEvent.DECLINED_BALANCE_REVIEW:
             state.preferences[PREF_SHOW_FINANCIAL_FIGURES] = False
             state.mode = ConversationMode.PAUSE
         case ConversationEvent.REQUESTED_BALANCE:
@@ -150,11 +161,13 @@ class ConversationService:
         repository: ConversationRepository,
         agent_timeout_s: float,
         bank: BankDataProvider | None = None,
+        demo_admins: frozenset[str] = frozenset(),
     ) -> None:
         self._agent = agent
         self._repository = repository
         self._agent_timeout_s = agent_timeout_s
         self._bank = bank
+        self._demo_admins = demo_admins
 
     async def _snapshot(self, state: ConversationState, ctx: str) -> BankSnapshot | None:
         """Datos del banco para este turno, o None si no corresponde usarlos.
@@ -204,7 +217,7 @@ class ConversationService:
         started: float,
         ctx: str,
     ) -> tuple[AgentRequest, AgentResponse]:
-        """Si el turno ENTRÓ a un modo cuya respuesta depende del modo, se pide de nuevo.
+        """Si el turno ENTRÓ a PAUSA_COMPRA o RETOMÓ desde un desvío, se pide de nuevo.
 
         La transición ocurre después de que el agente responde: si ella dice
         "me dan ganas de comprar en cuotas" en E0, el agente redactó en E0 y
@@ -213,10 +226,18 @@ class ConversationService:
         (etiqueta, evento, esencial) es la del primer llamado; del segundo solo
         se usa la redacción. Si no queda tiempo o falla, queda la primera.
         """
+        resumed = (
+            previous_mode in REANSWER_ON_RESUME_FROM and state.mode == ConversationMode.GREETING
+        )
+        crisis = (
+            response.intent == Intent.DISTRESS
+            or response.event is ConversationEvent.CRISIS_SUPPORT_NEEDED
+        )
         if (
-            state.mode not in REANSWER_ON_ENTRY
+            not (state.mode in REANSWER_ON_ENTRY or resumed)
             or state.mode == previous_mode
-            or response.protected_text
+            or crisis  # un texto de crisis nunca se vuelve a redactar
+            or (response.protected_text and not resumed)
         ):
             return request, response
         remaining = self._agent_timeout_s - (time.monotonic() - started)
@@ -303,6 +324,13 @@ class ConversationService:
         if not await self._repository.claim_message(message.message_sid):
             logger.info("Duplicate message ignored %s", ctx)
             return None
+
+        # Modo demo: un número autorizado puede reiniciar su propia conversación.
+        # Para cualquier otro número, "/reiniciar" es un mensaje más.
+        if message.user_id in self._demo_admins and message.body.strip().lower() in RESET_COMMANDS:
+            await self._repository.reset(message.user_id)
+            logger.info("Demo reset %s", ctx)
+            return DEMO_RESET_REPLY
 
         state = await self._repository.get(message.user_id)
 

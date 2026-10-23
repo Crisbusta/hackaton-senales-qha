@@ -22,6 +22,8 @@ Historia de los cambios acordados sobre este contrato:
   `int`; se publicaron las etiquetas (`Intent`) porque el backend necesita
   nombrarlas para las transiciones; y la tabla de campos por modo se movió
   acá, para que backend y agente filtren con la misma fuente de verdad.
+- Se eliminaron `AVOID_FINANCIAL_REVIEW` y `REQUESTED_SUMMARY`: nunca tuvieron
+  una semántica acordada y nadie los emitía (acordado en #5).
 """
 
 from enum import StrEnum
@@ -73,10 +75,8 @@ class FinancialField(BaseModel):
 
 
 class ConversationEvent(StrEnum):
-    AVOID_FINANCIAL_REVIEW = "AVOID_FINANCIAL_REVIEW"
     DECLINED_BALANCE_REVIEW = "DECLINED_BALANCE_REVIEW"
     REQUESTED_BALANCE = "REQUESTED_BALANCE"
-    REQUESTED_SUMMARY = "REQUESTED_SUMMARY"
     ACCEPTED_NEXT_STEP = "ACCEPTED_NEXT_STEP"
     # Agregado en esta propuesta: sin esto, angustia_fuerte (T05) no tiene
     # ningún efecto persistente en el backend. Al emitirlo, el backend debe

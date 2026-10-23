@@ -104,7 +104,7 @@ nunca registran el contenido del mensaje.
 
    | Evento | Efecto |
    |---|---|
-   | `DECLINED_BALANCE_REVIEW` / `AVOID_FINANCIAL_REVIEW` | `show_financial_figures=False`, modo `PAUSA_RECHAZO` |
+   | `DECLINED_BALANCE_REVIEW` | `show_financial_figures=False`, modo `PAUSA_RECHAZO` |
    | `REQUESTED_BALANCE` | `show_financial_figures=True` (la solicitud actual prevalece) |
    | `CRISIS_SUPPORT_NEEDED` | modo `APOYO` |
 
@@ -237,6 +237,7 @@ podría caer en una distinta.
 | `AGENT_IMPL` | `llm` (o `mock` para probar sin costo) |
 | `OPENAI_API_KEY` | 🔒 solo si `AGENT_IMPL=llm` |
 | `MOCK_BANK_SCENARIO` | `patricia` |
+| `DEMO_ADMIN_NUMBERS` | Números E.164 separados por coma que pueden escribir `/reiniciar` para borrar **su propia** conversación (ensayo de la demo). Vacío: desactivado |
 
 Los secretos (🔒) se cargan en el panel de Railway, nunca en el repositorio.
 
@@ -245,6 +246,8 @@ Los secretos (🔒) se cargan en el panel de Railway, nunca en el repositorio.
 En la configuración del sender de WhatsApp: **Webhook URL for incoming messages** =
 `https://<servicio>.up.railway.app/webhooks/whatsapp` (POST). El Status callback va vacío.
 Mientras el webhook apunte a Railway, ngrok local no recibe mensajes.
+
+**Demo:** el guion, los preparativos y el plan B están en [`docs/guion-demo.md`](docs/guion-demo.md).
 
 **Limitaciones:** cada nuevo deploy reinicia el proceso y se pierden las conversaciones en
 memoria (en la demo, Patricia vuelve a empezar desde "Hola").

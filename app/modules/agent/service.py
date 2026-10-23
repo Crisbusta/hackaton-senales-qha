@@ -41,9 +41,7 @@ FIELD_STATUS_ES = {
 }
 
 # Etiqueta del modelo -> evento del contrato. Solo se mapean las cuatro
-# inequívocas. `REQUESTED_SUMMARY` y `AVOID_FINANCIAL_REVIEW` quedan sin
-# usar a propósito: los definió el backend y su semántica exacta no está
-# acordada todavía, así que inventarla acá sería adivinar.
+# inequívocas.
 INTENT_TO_EVENT = {
     "angustia_fuerte": ConversationEvent.CRISIS_SUPPORT_NEEDED,
     "rechazo_pausa": ConversationEvent.DECLINED_BALANCE_REVIEW,
