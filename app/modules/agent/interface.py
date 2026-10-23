@@ -9,13 +9,15 @@ Responsabilidades:
 - El backend (ConversationService) traduce eventos a preferencias con reglas
   deterministas. El agente nunca modifica preferencias directamente.
 
-PROPUESTA (rama feat/t02-agent-contract-safety, pendiente de acuerdo con B):
-la versión anterior de este contrato no tenía forma de representar el modo
-de conversación (E0-E4/PAUSA_RECHAZO/PAUSA_COMPRA/APOYO/CIERRE), los datos del PDF
-con su estado de confianza, ni una señal de crisis. Sin eso, el backend no
-tiene cómo saber que debe entrar en modo de apoyo y quedarse ahí los
-siguientes turnos: el texto saldría bien redactado pero el sistema no lo
-sostendría. Ver el comentario en el PR para el detalle completo.
+Historia de los cambios acordados sobre este contrato:
+- PR #2: se agregaron el modo de conversación, los datos del PDF con su
+  estado de confianza y el evento de crisis. Sin el evento, una etiqueta
+  `angustia_fuerte` no tenía forma de persistir en el backend.
+- PR #3: `PAUSA`/`PAUSA_ACTIVA` pasaron a `PAUSA_RECHAZO`/`PAUSA_COMPRA`,
+  porque los dos nombres se usaban al revés entre el esquema y el código.
+- PR #4: los cuatro campos que el agente necesita y no tenía dónde leer
+  (`max_mode_reached`, `calculations`, `previous_intent`,
+  `requested_installment_calculation`).
 """
 
 from enum import StrEnum
@@ -102,6 +104,28 @@ class AgentRequest(BaseModel):
     can_offer_continue: bool = False  # AB2: una oferta por escalón
     can_clarify_route: bool = False  # AB1: una aclaración por tema
     already_stated_limits: list[str] = Field(default_factory=list)  # AB7
+
+    # El escalón más alto que ella alcanzó en la conversación (AB6: solo
+    # sube). Permite que `retoma_voluntaria` reconozca lo que ya vio
+    # ("la vez pasada miramos tu pago mínimo") sin repetir las cifras.
+    # None equivale a GREETING: nunca pasó de conversar.
+    max_mode_reached: ConversationMode | None = None
+
+    # Resultados del simulador (T10), ya calculados. El agente los redacta
+    # pero nunca los recalcula: las cifras financieras no pasan por el LLM.
+    # Las claves son libres porque T10 todavía no está implementado; cuando
+    # exista, se cierran aquí.
+    calculations: dict[str, float] = Field(default_factory=dict)
+
+    # Etiqueta del turno anterior. Habilita los datos condicionales que no
+    # pertenecen a ningún escalón: `monto_facturado` solo entra si ella
+    # acaba de preguntar por él, y la tasa solo si preguntó por intereses.
+    previous_intent: str | None = None
+
+    # True cuando ella eligió ver cuánto le sumaría la cuota al mínimo
+    # (opción 2 de PAUSA_COMPRA). Sin esto, PAUSA_COMPRA no recibe ninguna
+    # cifra y el agente no puede responder a lo que ella pidió.
+    requested_installment_calculation: bool = False
 
     preferences: dict[str, bool] = Field(default_factory=dict)
 

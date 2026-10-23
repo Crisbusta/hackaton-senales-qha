@@ -102,3 +102,51 @@ def test_protocol_can_be_implemented_structurally() -> None:
     )
 
     assert asyncio.run(agent.process(request)).message == "Hola"
+
+
+# --- campos agregados en PR #4 -----------------------------------------
+
+def test_new_fields_have_backward_compatible_defaults() -> None:
+    # Un request escrito antes de PR #4 sigue siendo valido: nadie que ya
+    # use el contrato se rompe por estos campos.
+    request = AgentRequest(user_id="u1", message="Hola", mode=ConversationMode.GREETING)
+
+    assert request.max_mode_reached is None
+    assert request.calculations == {}
+    assert request.previous_intent is None
+    assert request.requested_installment_calculation is False
+
+
+def test_max_mode_reached_accepts_a_mode() -> None:
+    request = AgentRequest(
+        user_id="u1",
+        message="hola, ya estoy mejor",
+        mode=ConversationMode.GREETING,
+        max_mode_reached=ConversationMode.BALANCE_OVERVIEW,
+    )
+
+    assert request.max_mode_reached is ConversationMode.BALANCE_OVERVIEW
+
+
+def test_calculations_carries_simulator_output() -> None:
+    # Las cifras del simulador (T10) llegan resueltas: el agente las
+    # redacta, no las calcula.
+    request = AgentRequest(
+        user_id="u1",
+        message="y si pago 50 mil mas?",
+        mode=ConversationMode.AMOUNT_SIMULATION,
+        calculations={"months_with_extra": 43, "interest_saved": 123000},
+    )
+
+    assert request.calculations["months_with_extra"] == 43
+
+
+def test_previous_intent_enables_conditional_data() -> None:
+    request = AgentRequest(
+        user_id="u1",
+        message="y eso que significa?",
+        mode=ConversationMode.BALANCE_OVERVIEW,
+        previous_intent="pregunta_monto_facturado",
+    )
+
+    assert request.previous_intent == "pregunta_monto_facturado"
