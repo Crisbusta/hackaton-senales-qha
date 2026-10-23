@@ -11,7 +11,7 @@ Responsabilidades:
 
 PROPUESTA (rama feat/t02-agent-contract-safety, pendiente de acuerdo con B):
 la versión anterior de este contrato no tenía forma de representar el modo
-de conversación (E0-E4/PAUSA/PAUSA_ACTIVA/APOYO/CIERRE), los datos del PDF
+de conversación (E0-E4/PAUSA_RECHAZO/PAUSA_COMPRA/APOYO/CIERRE), los datos del PDF
 con su estado de confianza, ni una señal de crisis. Sin eso, el backend no
 tiene cómo saber que debe entrar en modo de apoyo y quedarse ahí los
 siguientes turnos: el texto saldría bien redactado pero el sistema no lo
@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 class ConversationMode(StrEnum):
     """El backend es dueño del modo: el agente nunca lo decide, solo lo lee.
 
-    Corresponde a la máquina de estados E0-E4 / PAUSA / PAUSA_ACTIVA / APOYO
+    Corresponde a la máquina de estados E0-E4 / PAUSA_RECHAZO / PAUSA_COMPRA / APOYO
     / CIERRE acordada para el flujo de Patricia (T01/T06).
     """
 
@@ -36,8 +36,8 @@ class ConversationMode(StrEnum):
     BALANCE_OVERVIEW = "E2"  # ve pago mínimo y saldo
     MINIMUM_BREAKDOWN = "E3"  # ve en qué se reparte el mínimo
     AMOUNT_SIMULATION = "E4"  # prueba un monto que ella eligió
-    PAUSE = "PAUSA"  # rechazó seguir, se detiene lo financiero
-    INSTALLMENT_PAUSE = "PAUSA_ACTIVA"  # ganas de comprar en cuotas
+    PAUSE = "PAUSA_RECHAZO"  # rechazó seguir, se detiene lo financiero
+    INSTALLMENT_PAUSE = "PAUSA_COMPRA"  # ganas de comprar en cuotas
     SUPPORT = "APOYO"  # tras angustia fuerte: nada financiero
     CLOSING = "CIERRE"
 
