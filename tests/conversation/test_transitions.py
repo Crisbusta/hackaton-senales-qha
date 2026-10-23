@@ -112,3 +112,39 @@ def test_a_message_with_content_is_not_an_acknowledgement():
     for texto in ("ok, cuanto debo?", "gracias, y el saldo?", "ya no quiero vivir",
                   "ok pero no entiendo"):
         assert not t.es_acuse_vacio(texto), texto
+
+
+# --- estando en PAUSA_COMPRA (C05) --------------------------------------
+
+
+def test_asking_inside_the_installment_pause_stays_in_the_installment_pause():
+    """El dato que ella pide en PAUSA_COMPRA es el efecto de la cuota, y vive
+    en ese modo. Antes caia en _siguiente_escalon, que para un modo fuera de
+    la Escalera devuelve E2: el "muestrame" de C05 la mandaba a ver saldo y
+    minimo, que no es lo que pregunto."""
+    for intent in t.AVANCE:
+        assert paso(ConversationMode.INSTALLMENT_PAUSE, intent) is (
+            ConversationMode.INSTALLMENT_PAUSE
+        )
+
+
+def test_the_installment_pause_is_still_left_the_ways_it_should_be():
+    assert paso(ConversationMode.INSTALLMENT_PAUSE, Intent.DECLINED) is ConversationMode.PAUSE
+    assert paso(ConversationMode.INSTALLMENT_PAUSE, Intent.CLOSING) is ConversationMode.CLOSING
+    assert paso(ConversationMode.INSTALLMENT_PAUSE, Intent.VOLUNTARY_RESUME) is (
+        ConversationMode.GREETING
+    )
+    assert t.siguiente_modo(
+        ConversationMode.INSTALLMENT_PAUSE,
+        ConversationMode.GREETING,
+        Intent.WILLING_TO_EXPLORE,
+        ConversationEvent.CRISIS_SUPPORT_NEEDED,
+    ) is ConversationMode.SUPPORT
+
+
+def test_the_installment_pause_does_not_count_as_a_ladder_step():
+    """AB6: PAUSA_COMPRA es un desvio, no un escalon, asi que quedarse en el
+    no puede mover `max_mode_reached`."""
+    assert t.subir_maximo(
+        ConversationMode.DUE_DATE, ConversationMode.INSTALLMENT_PAUSE
+    ) is ConversationMode.DUE_DATE
