@@ -45,26 +45,40 @@ def amounts_in(text: str) -> set[int]:
     return {int((a or b or c).replace(".", "")) for a, b, c in _AMOUNT.findall(text)}
 
 
-def fields_to_send(mode: ConversationMode, previous_intent: str | None) -> tuple[str, ...]:
+def fields_to_send(
+    mode: ConversationMode, previous_intent: str | None, requested_installment: bool = False
+) -> tuple[str, ...]:
     """Campos que viajan al agente en este turno."""
     if mode in LADDER_MODES:
         return PRELOAD_FIELDS
-    return tuple(fields_for_mode(mode, previous_intent))
+    return tuple(fields_for_mode(mode, previous_intent, requested_installment))
 
 
 def allowed_fields(
-    mode: ConversationMode, current_intent: str, previous_intent: str | None
+    modes: Iterable[ConversationMode],
+    intents: Iterable[str | None],
+    requested_installment: bool = False,
 ) -> set[str]:
-    """Campos que la respuesta puede mencionar, según el modo en que terminó el turno.
+    """Campos que la respuesta puede mencionar.
 
-    Una pregunta condicional (facturado, tasa) habilita su dato en el turno en
-    que ella la hace y en el siguiente.
+    `modes`: el modo con el que se llamó al agente (el backend pudo subirlo
+    antes, p. ej. a E4) y el modo en que terminó el turno. `intents`: la
+    etiqueta de este turno y la del anterior, porque una pregunta condicional
+    (facturado, tasa) habilita su dato en el turno en que ella la hace.
     """
-    return set(fields_for_mode(mode, current_intent)) | set(fields_for_mode(mode, previous_intent))
+    return {
+        field
+        for mode in modes
+        for intent in intents
+        for field in fields_for_mode(mode, intent, requested_installment)
+    }
 
 
 def allowed_amounts(
-    data: dict[str, FinancialField], fields: Iterable[str], extra_texts: Iterable[str] = ()
+    data: dict[str, FinancialField],
+    fields: Iterable[str],
+    extra_texts: Iterable[str] = (),
+    calculations: dict[str, int] | None = None,
 ) -> set[int]:
     """Montos permitidos: los de los campos autorizados y los que ella misma escribió.
 
@@ -81,6 +95,7 @@ def allowed_amounts(
             amounts |= {int(value)} if isinstance(value, int | float) else amounts_in(str(value))
     for text in extra_texts:
         amounts |= amounts_in(text)
+    amounts |= set((calculations or {}).values())
     return amounts
 
 
