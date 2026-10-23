@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # TwiML; se deja margen para el resto del procesamiento.
     agent_timeout_s: float = 12.0
 
+    # Escenario ficticio del banco simulado (app/modules/banking/fixtures/<nombre>.json).
+    # Vacío: ningún usuario tiene banco vinculado.
+    mock_bank_scenario: str = "patricia"
+
     # Twilio (se usan desde feat/twilio-webhook).
     twilio_auth_token: str = ""
     # URL pública exacta que Twilio llama (p. ej. https://contigo.up.railway.app).
