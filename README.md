@@ -116,15 +116,31 @@ nunca registran el contenido del mensaje.
 El agente se elige con `AGENT_IMPL` (`mock` por defecto). `MockAgent` responde por
 palabras clave y nunca muestra cifras.
 
-### Persistencia temporal (en memoria)
+### Persistencia (en memoria o PostgreSQL)
 
-`InMemoryConversationRepository` implementa la interfaz `ConversationRepository`, que
-luego se implementará con PostgreSQL. Limitaciones:
+`build_repository()` elige la implementación de `ConversationRepository` según `DATABASE_URL`:
 
-- Los datos desaparecen al reiniciar (también con cada recarga de `--reload`).
-- No funciona con múltiples réplicas ni workers.
-- No ofrece persistencia duradera.
-- La deduplicación por `MessageSid` solo aplica durante la vida del proceso.
+- **Vacía (default): `InMemoryConversationRepository`.** Los datos desaparecen al reiniciar
+  (también con cada recarga de `--reload` y con cada deploy), no funciona con múltiples réplicas
+  ni workers y la deduplicación por `MessageSid` solo aplica durante la vida del proceso.
+- **Con valor: `PostgresConversationRepository`** (`psycopg` 3 asíncrono con pool). Las
+  conversaciones y los `MessageSid` procesados sobreviven a los redeploys. El pool se abre al
+  arrancar la app y las tablas se crean solas si no existen (`conversation_states`, con el estado
+  completo como `jsonb`, y `processed_messages`); no hay migraciones. Cada operación es una sola
+  sentencia. La deduplicación es atómica entre procesos (`INSERT ... ON CONFLICT DO NOTHING`);
+  si llegan dos turnos del mismo usuario a la vez, gana la última escritura. Si la base no
+  responde al arrancar, la app no levanta.
+
+`/reiniciar` borra solo el estado del usuario, en ambas implementaciones: un reenvío de Twilio de
+un mensaje ya procesado sigue siendo duplicado.
+
+Tests contra PostgreSQL (se saltan sin `TEST_DATABASE_URL`; vacían esas dos tablas):
+
+```bash
+docker run -d --rm --name contigo-pg-test -p 55432:5432 -e POSTGRES_PASSWORD=test postgres:16
+TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/postgres uv run pytest
+docker stop contigo-pg-test
+```
 
 ## Banco simulado
 
@@ -240,8 +256,8 @@ docker run -p 8000:8000 --env-file .env contigo
 
 La imagen usa `uv sync --frozen --no-dev`, corre con un usuario sin privilegios y escucha en
 `$PORT` (Railway lo inyecta). `railway.json` define el healthcheck (`/health`) y **una sola
-réplica**: el estado de la conversación está en memoria, así que con dos réplicas cada mensaje
-podría caer en una distinta.
+réplica**: sin `DATABASE_URL` el estado de la conversación está en memoria, así que con dos
+réplicas cada mensaje podría caer en una distinta.
 
 ### Variables en Railway
 
@@ -254,6 +270,7 @@ podría caer en una distinta.
 | `OPENAI_API_KEY` | 🔒 solo si `AGENT_IMPL=llm` |
 | `MOCK_BANK_SCENARIO` | `patricia` |
 | `DASHBOARD_PASSWORD` | 🔒 Contraseña de `/dashboard`. Vacía: desactivado |
+| `DATABASE_URL` | 🔒 Referencia a la base: `${{Postgres.DATABASE_URL}}` (ver abajo). Vacía: en memoria |
 | `DEMO_ADMIN_NUMBERS` | Números E.164 separados por coma que pueden escribir `/reiniciar` para borrar **su propia** conversación (ensayo de la demo). Vacío: desactivado |
 
 Los secretos (🔒) se cargan en el panel de Railway, nunca en el repositorio.
@@ -266,8 +283,17 @@ Mientras el webhook apunte a Railway, ngrok local no recibe mensajes.
 
 **Demo:** el guion, los preparativos y el plan B están en [`docs/guion-demo.md`](docs/guion-demo.md).
 
-**Limitaciones:** cada nuevo deploy reinicia el proceso y se pierden las conversaciones en
-memoria (en la demo, Patricia vuelve a empezar desde "Hola").
+**Limitaciones:** sin `DATABASE_URL`, cada nuevo deploy reinicia el proceso y se pierden las
+conversaciones en memoria (en la demo, Patricia vuelve a empezar desde "Hola").
+
+### PostgreSQL en Railway
+
+1. En el proyecto: **+ New → Database → PostgreSQL** (crea el servicio `Postgres`).
+2. En el servicio `api` → **Variables**: `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (la URL
+   de la red privada; no hace falta exponer la base a internet).
+3. Redeploy. En los logs debe aparecer `Conversation repository: postgres`. Las tablas se crean
+   en el primer arranque.
+4. Para volver a memoria, borrar la variable (los datos quedan en la base).
 
 ## Tests y lint
 
