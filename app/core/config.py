@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     # TwiML; se deja margen para el resto del procesamiento.
     agent_timeout_s: float = 12.0
 
+    # OpenAI (se usan cuando agent_impl="llm").
+    openai_api_key: str = ""
+    # gpt-6.1-sol principal y gpt-6-luna de respaldo: 15/16 aciertos cada
+    # uno en los 16 casos de clasificación difíciles, 3,4-4,9 s de latencia.
+    openai_model: str = "gpt-6.1-sol"
+    openai_fallback_model: str = "gpt-6-luna"
+    # Los modelos de razonamiento solo aceptan el default; el cliente omite
+    # el parámetro cuando el modelo lo rechaza.
+    openai_temperature: float = 0.3
+
     # Twilio (se usan desde feat/twilio-webhook).
     twilio_auth_token: str = ""
     # URL pública exacta que Twilio llama (p. ej. https://contigo.up.railway.app).

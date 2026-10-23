@@ -113,8 +113,28 @@ Arquitectura feature-based: cada módulo en `app/modules/<feature>/`.
 | `agent/interface.py` | Backend + IA (contrato compartido) | ✅ |
 | `whatsapp/` | Backend | pendiente |
 | `conversation/` | Backend | pendiente |
-| `agent/` (LLM) | IA | pendiente |
+| `agent/` (LLM) | IA | ✅ |
 | `statements/`, `finance/` | Backend | posterior |
+
+## Agente (IA)
+
+`agent/service.py` expone `LlmAgent`, que implementa el protocolo `Agent`.
+Un turno pasa por cuatro capas antes de responder:
+
+1. **Pre-filtro** (`prefilter.py`): la ideación explícita se ataja sin
+   llamar al modelo.
+2. **Structured output** (`client.py`): etiqueta y mensaje en campos
+   separados, nunca un string que haya que parsear.
+3. **Texto fijo** (`texts.py`): en `angustia_fuerte`, `rechazo_pausa` y
+   `no_texto` la prosa del modelo se descarta.
+4. **Validadores** (`validators.py`): seis chequeos deterministas, entre
+   ellos la lista blanca numérica — toda cifra de la respuesta tiene que
+   venir de `financial_data` o de `calculations`. Si falla, un reintento;
+   si vuelve a fallar, sale el texto de respaldo del modo.
+
+Para correrlo de verdad hace falta `AGENT_IMPL=llm` y `OPENAI_API_KEY` en
+el `.env`. Los tests usan un modelo simulado: no gastan tokens ni salen a
+la red.
 
 ## Contrato backend ↔ IA
 

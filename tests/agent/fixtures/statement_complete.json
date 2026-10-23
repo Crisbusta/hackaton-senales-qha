@@ -1,0 +1,13 @@
+{
+  "_nota": "Datos FICTICIOS de la demo. Cero datos reales. Reemplaza a T07 mientras el parser de PDF no exista. Cada campo trae valor y estado: confirmado | ausente | no confiable.",
+  "variante": "completo",
+  "vencimiento":      {"valor": "3 de noviembre de 2026", "estado": "confirmado"},
+  "minimo":           {"valor": 74350,   "estado": "confirmado"},
+  "saldo":            {"valor": 1064000, "estado": "confirmado"},
+  "minimo_intereses": {"valor": 23100,   "estado": "confirmado"},
+  "minimo_cuotas":    {"valor": 43000,   "estado": "confirmado"},
+  "minimo_abono":     {"valor": 8250,    "estado": "confirmado"},
+  "facturado":        {"valor": 868000,  "estado": "confirmado", "solo_si_pregunta": true},
+  "cupo":             {"valor": 1500000, "estado": "confirmado"},
+  "tasa":             {"valor": "2,8 % mensual", "estado": "confirmado", "solo_si_pregunta": true}
+}
