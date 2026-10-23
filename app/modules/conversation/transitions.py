@@ -91,6 +91,18 @@ def siguiente_modo(
             return _siguiente_escalon(max_modo)
         return modo
 
+    if modo is ConversationMode.INSTALLMENT_PAUSE:
+        # "El escalón donde vive el dato que pidió": estando en PAUSA_COMPRA,
+        # lo que ella pide es el efecto de la cuota en su mínimo, y ese dato
+        # vive en este modo (INSTALLMENT_CALC_FIELDS). Sin esta rama caía en
+        # `_siguiente_escalon`, que para un modo fuera de la Escalera devuelve
+        # E2: en C05, el "muéstrame" del turno 2 la movía a ver saldo y mínimo
+        # —que no es lo que preguntó— y al salir de PAUSA_COMPRA el servicio
+        # apagaba `installment_calc_requested`, así que el turno 3, donde va
+        # la cifra de la cuota, llegaba sin el cálculo y sin el hilo de la
+        # compra.
+        return modo
+
     if intent in AVANCE:
         return _siguiente_escalon(modo)
     return modo
