@@ -4,8 +4,9 @@
 desde `fixtures/`; un proveedor regulado de Open Finance implementaría la
 misma interfaz sin cambios en el resto del backend.
 
-El consentimiento del usuario lo verifica quien llama (ConversationService):
-el proveedor no decide si corresponde consultar.
+Consentimiento: el usuario lo otorga en el portal de su banco, fuera del
+chat. Igual que una API de Open Finance, el proveedor no entrega datos sin
+un consentimiento vigente.
 """
 
 import json
@@ -20,7 +21,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 class BankDataProvider(Protocol):
     async def get_snapshot(self, user_id: str) -> BankSnapshot | None:
-        """Datos bancarios del usuario, o None si no tiene banco vinculado."""
+        """Datos bancarios del usuario, o None sin banco vinculado o sin consentimiento."""
         ...
 
 
@@ -42,7 +43,9 @@ class MockBankProvider:
         return BankSnapshot.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
     async def get_snapshot(self, user_id: str) -> BankSnapshot | None:
-        return self._snapshot.model_copy(deep=True) if self._snapshot else None
+        if self._snapshot is None or not self._snapshot.consent.granted:
+            return None
+        return self._snapshot.model_copy(deep=True)
 
 
 def build_bank_provider(settings: Settings) -> BankDataProvider:

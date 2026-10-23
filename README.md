@@ -146,8 +146,23 @@ gastos esenciales) y panorama de deudas. Las cifras del escenario de Patricia co
 `docs/casos_p0.md`.
 
 Convenciones: montos en `int` (CLP), tasas en `Decimal`, banco ficticio (nunca una marca real).
-El banco solo se consulta con consentimiento explícito del usuario (pendiente de integrar
-en `ConversationService`).
+
+**Consentimiento.** Como en Open Finance, se otorga **fuera del chat**, en el portal del banco
+(`consent.granted` en el escenario). Sin un consentimiento vigente, el proveedor no entrega
+datos. Contigo nunca pide la conexión por WhatsApp.
+
+**Uso en la conversación: precarga + verificación posterior** (`conversation/figures.py`).
+
+1. En los escalones (E0–E4), el agente recibe **todos los datos de la Escalera**, para poder
+   responder en el mismo turno lo que ella pide, sin un turno de atraso.
+2. Después de la transición, el backend verifica que la respuesta **solo traiga montos del modo
+   en que terminó el turno** (`fields_for_mode()`) o montos que ella misma escribió.
+3. Si trae una cifra de más, se reintenta una vez con solo los datos permitidos. Si no queda
+   tiempo o el reintento tampoco cumple, sale un texto sin cifras.
+
+En las pausas, APOYO y CIERRE no se precarga nada. Si el usuario pidió no ver cifras, sin
+consentimiento o si el banco falla, no viaja ninguna cifra. Una cifra sin fuente verificable
+nunca se envía.
 
 ## Tests y lint
 

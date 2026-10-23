@@ -2,6 +2,7 @@
   "_nota": "Datos 100 % FICTICIOS para la demo. Banco inexistente. Las cifras de la tarjeta coinciden con el estado de cuenta ficticio de docs/casos_p0.md y tests/agent/fixtures/statement_complete.json.",
   "bank_name": "Banco Austral (ficticio)",
   "retrieved_at": "2026-10-23T09:00:00-03:00",
+  "consent": {"granted": true, "granted_at": "2026-10-20T18:30:00-03:00", "channel": "portal_banco"},
   "customer": {"customer_id": "cus_demo_patricia", "first_name": "Patricia"},
   "accounts": [
     {

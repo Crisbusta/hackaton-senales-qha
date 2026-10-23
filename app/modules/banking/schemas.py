@@ -123,11 +123,24 @@ class ConsumerLoan(BaseModel):
         return self.total_installments - self.paid_installments
 
 
+class BankConsent(BaseModel):
+    """Autorización que el usuario otorgó en el portal de su banco.
+
+    Como en Open Finance, el consentimiento no se pide por chat: se otorga
+    fuera de la conversación, con las credenciales del banco.
+    """
+
+    granted: bool
+    granted_at: datetime | None = None
+    channel: Literal["portal_banco"] = "portal_banco"
+
+
 class BankSnapshot(BaseModel):
     """Todo lo que el banco expone del usuario en un momento dado."""
 
     bank_name: str
     retrieved_at: datetime
+    consent: BankConsent
     customer: Customer
     accounts: list[Account] = Field(default_factory=list)
     transactions: list[Transaction] = Field(default_factory=list)
