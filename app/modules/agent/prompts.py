@@ -29,6 +29,11 @@ with open(os.path.join(_AQUI, "static_prompt.txt"), encoding="utf-8") as f:
 
 MODOS = ("E0", "E1", "E2", "E3", "E4", "PAUSA_RECHAZO", "PAUSA_COMPRA", "APOYO", "CIERRE")
 
+# Los escalones: los unicos modos donde el backend precarga datos (#12) y
+# por lo tanto los unicos donde puede existir el segundo bloque de
+# DATOS_DISPONIBLES. Fuera de aca el modelo no ve ninguna cifra.
+ESCALONES = ("E0", "E1", "E2", "E3", "E4")
+
 # La tabla de campos por modo vive en interface.py: es contrato, porque el
 # backend filtra con ella antes de llamar y el agente vuelve a filtrar aca
 # como defensa en profundidad. Estos alias existen para no tener dos tablas.
@@ -122,6 +127,17 @@ MOVIMIENTOS_CUOTA_CALCULADA = [
     "No le digas que no compre ni la hagas sentir mal. La decision es suya.",
 ]
 
+# PAUSA_COMPRA cuando ella ya eligio la opcion 2 pero todavia no dijo el
+# monto: falta preguntarlo. Sin estos movimientos el modelo volvia a
+# ofrecer las dos opciones (C05 turno 2, medido el 23 oct: "Muestrame"
+# recibio otra vez "podemos esperar diez minutos, o te cuento..."). Las
+# opciones se ofrecen una sola vez por pausa (AB1).
+MOVIMIENTOS_PEDIR_MONTO_CUOTAS = [
+    "Preguntale una sola vez el monto y en cuantas cuotas.",
+    "NO vuelvas a ofrecer las dos opciones: ella ya eligio esta.",
+    "No le digas que no compre ni la hagas sentir mal por querer comprar.",
+]
+
 # Estando en CIERRE, el modo se actualiza DESPUES de este turno, asi que
 # cuando ella vuelve el modelo todavia ve modo=CIERRE y se despide de
 # alguien que esta retomando (C01 turno 4, medido el 23 oct: "hola, ya
@@ -200,6 +216,17 @@ def _monto(valor):
     return str(valor)
 
 
+# Claves del simulador que NO son pesos. `meses_ahorrados: 19` salia como
+# "$19" y el modelo lo repetia como dinero.
+_PREFIJOS_NO_MONTO = ("meses_",)
+
+
+def _formatear_calculo(clave, valor):
+    if clave.startswith(_PREFIJOS_NO_MONTO):
+        return f"{valor} meses"
+    return _monto(valor)
+
+
 def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
                    pidio_calculo_cuota=False, historial=None):
     """Los tres bloques que el codigo le pasa al modelo cada turno.
@@ -226,12 +253,34 @@ def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
     visibles = campos_visibles(modo, pregunta_previa, pidio_calculo_cuota)
     presentes = [c for c in visibles if c in (datos or {})]
     calculos = calculos_visibles(modo, motor, pidio_calculo_cuota)
-    if not presentes and not calculos:
+    # El backend precarga toda la Escalera en E0-E4 (#12). Antes se
+    # descartaba lo que no era del escalon, asi que a "cuando vence?" en E0
+    # el modelo no tenia la fecha y contestaba "la podemos ver en un
+    # momento" (C03, medido el 23 oct). Ahora va en un segundo bloque, con
+    # la condicion escrita: solo si ella lo pide en ESTE mensaje. La lista
+    # blanca del validador (#15) sigue autorizando unicamente lo que la
+    # etiqueta de este turno habilita, asi que mencionarlo sin que ella lo
+    # pida se descarta igual.
+    # Solo en los escalones. En las pausas, APOYO y CIERRE no hay segundo
+    # bloque ni aunque el backend mande datos: ahi la garantia es que el
+    # modelo no tiene ninguna cifra, y es lo que sostiene C01 y C10.
+    reservados = (
+        [c for c, v in (datos or {}).items() if c not in presentes and isinstance(v, dict)]
+        if modo in ESCALONES
+        else []
+    )
+    if not presentes and not calculos and not reservados:
         lineas.append("ninguno")
+    if presentes or calculos:
+        lineas.append("DE ESTE ESCALON")
     for campo in presentes:
         lineas.append(f"{campo}: {_formatear_valor(datos[campo])}")
     for clave, valor in calculos.items():
-        lineas.append(f"{clave}: {_monto(valor)}  (calculado)")
+        lineas.append(f"{clave}: {_formatear_calculo(clave, valor)}  (calculado)")
+    if reservados:
+        lineas += ["", "SOLO SI ELLA LO PIDE EN ESTE MENSAJE"]
+        for campo in reservados:
+            lineas.append(f"{campo}: {_formatear_valor(datos[campo])}")
 
     lineas += ["", "HISTORIAL RECIENTE (solo para entender a que se refiere;",
                "las cifras vienen enmascaradas porque nunca salen de aca)"]
@@ -248,6 +297,8 @@ def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
         movimientos = [m.format(resumen=resumen) for m in MOVIMIENTOS_RETOMA]
     elif modo == "PAUSA_COMPRA" and _tiene_valor(datos, "minimo_con_cuota"):
         movimientos = list(MOVIMIENTOS_CUOTA_CALCULADA)
+    elif modo == "PAUSA_COMPRA" and pidio_calculo_cuota:
+        movimientos = list(MOVIMIENTOS_PEDIR_MONTO_CUOTAS)
     else:
         movimientos = list(MOVIMIENTOS[modo])
     if modo in MODOS_CON_OFERTA and estado.get("puedes_ofrecer_continuar"):
