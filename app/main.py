@@ -8,6 +8,7 @@ from app.modules.agent.factory import build_agent
 from app.modules.banking.provider import build_bank_provider
 from app.modules.conversation.repository import InMemoryConversationRepository
 from app.modules.conversation.service import ConversationService
+from app.modules.dashboard.router import router as dashboard_router
 from app.modules.whatsapp.router import router as whatsapp_router
 
 logger = logging.getLogger(__name__)
@@ -24,9 +25,11 @@ def create_app() -> FastAPI:
 
     # Composición: aquí se eligen las implementaciones concretas. Un repositorio
     # por instancia de app (en memoria: se pierde al reiniciar).
+    repository = InMemoryConversationRepository()
+    app.state.repository = repository
     app.state.message_handler = ConversationService(
         agent=build_agent(settings),
-        repository=InMemoryConversationRepository(),
+        repository=repository,
         agent_timeout_s=settings.agent_timeout_s,
         bank=build_bank_provider(settings),
         demo_admins=settings.demo_admins,
@@ -37,6 +40,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "service": settings.app_name}
 
     app.include_router(whatsapp_router)
+    app.include_router(dashboard_router)
 
     return app
 

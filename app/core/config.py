@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # borrar su propia conversación. Para ensayar la demo. Vacío: desactivado.
     demo_admin_numbers: str = ""
 
+    # Contraseña del dashboard de progreso (/dashboard, autenticación básica).
+    # Vacía: el dashboard está desactivado (responde 404).
+    dashboard_password: str = ""
+
     # OpenAI (se usan cuando agent_impl="llm").
     openai_api_key: str = ""
     # gpt-6.1-sol principal y gpt-6-luna de respaldo: 15/16 aciertos cada

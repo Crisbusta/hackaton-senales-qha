@@ -14,8 +14,9 @@ ficticio). Producción: `https://api-production-0f5fb.up.railway.app`.
    escribir **`/reiniciar`** → "Listo, la conversación empieza de cero. (modo demo)".
 4. **Sandbox de WhatsApp:** si pasaron 3 días desde el `join`, volver a enviarlo.
 5. **Ensayo corto:** enviar "Hola", ver que responde y volver a escribir `/reiniciar`.
-6. **Pantalla:** WhatsApp proyectado (WhatsApp Web o espejo del teléfono). En una segunda
-   pestaña, los logs de Railway (`railway logs --service api`) por si hay que explicar algo.
+6. **Pantalla:** WhatsApp proyectado (WhatsApp Web o espejo del teléfono) y, al lado, el
+   **dashboard** (`https://api-production-0f5fb.up.railway.app/dashboard`, contraseña
+   `DASHBOARD_PASSWORD`): el jurado ve avanzar la Escalera y los avances en vivo.
 
 ## Secuencia
 

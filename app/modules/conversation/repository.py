@@ -16,6 +16,8 @@ from app.modules.conversation.schemas import ConversationState
 
 # Historial máximo guardado por usuario (mensajes, no turnos).
 MAX_HISTORY_MESSAGES = 20
+# Turnos que se conservan en la línea de tiempo del dashboard.
+MAX_TIMELINE_ENTRIES = 200
 
 
 class ConversationRepository(Protocol):
@@ -31,6 +33,10 @@ class ConversationRepository(Protocol):
         """Borra el estado del usuario (la conversación vuelve a empezar)."""
         ...
 
+    async def list_all(self) -> list[ConversationState]:
+        """Todas las conversaciones, la más reciente primero (para el dashboard)."""
+        ...
+
 
 class InMemoryConversationRepository:
     def __init__(self) -> None:
@@ -44,6 +50,7 @@ class InMemoryConversationRepository:
 
     async def save(self, state: ConversationState) -> None:
         state.history = state.history[-MAX_HISTORY_MESSAGES:]
+        state.timeline = state.timeline[-MAX_TIMELINE_ENTRIES:]
         self._states[state.user_id] = state.model_copy(deep=True)
 
     async def claim_message(self, message_sid: str) -> bool:
@@ -56,3 +63,7 @@ class InMemoryConversationRepository:
     async def reset(self, user_id: str) -> None:
         # Los MessageSid procesados se conservan: un reenvío de Twilio sigue siendo duplicado.
         self._states.pop(user_id, None)
+
+    async def list_all(self) -> list[ConversationState]:
+        states = sorted(self._states.values(), key=lambda s: s.updated_at, reverse=True)
+        return [state.model_copy(deep=True) for state in states]

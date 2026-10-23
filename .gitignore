@@ -28,3 +28,4 @@ data/
 # Configuración local de herramientas (puede contener credenciales)
 .codex/
 .claude/
+.playwright-mcp/

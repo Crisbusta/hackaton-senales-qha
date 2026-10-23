@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:,">
+<title>Contigo · Progreso</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --text: #1f2328; --muted: #646a73; --line: #e3e1dc;
+    --accent: #2f6f5e; --accent-soft: #e2f0eb; --pause: #8a5a00; --pause-soft: #fbf0d9;
+    --support: #6b3fa0; --support-soft: #efe7f8; --todo: #c9c6bf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a; --card: #1e2125; --text: #e8e6e3; --muted: #9aa0a8; --line: #30343a;
+      --accent: #6cc3a8; --accent-soft: #1f3a33; --pause: #e0b25c; --pause-soft: #3a2f1a;
+      --support: #b896e6; --support-soft: #2f2640; --todo: #4a4f57;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 20px 16px 8px; max-width: 1100px; margin: 0 auto;
+           display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; }
+  .sub { color: var(--muted); font-size: 13px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 8px 16px 40px; display: grid; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .who { font-weight: 600; font-size: 17px; }
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 13px;
+          background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .pill.pause { background: var(--pause-soft); color: var(--pause); }
+  .pill.support { background: var(--support-soft); color: var(--support); }
+  .ladder { display: flex; gap: 6px; margin: 18px 0 6px; }
+  .step { flex: 1; min-width: 0; }
+  .bar { height: 8px; border-radius: 4px; background: var(--todo); }
+  .step.reached .bar { background: var(--accent); }
+  .step.current .bar { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .step span { display: block; font-size: 12px; color: var(--muted); margin-top: 6px;
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .step.reached span { color: var(--text); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 16px; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  .ms li { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+  .ms li:last-child { border-bottom: 0; }
+  .ms .mark { width: 18px; text-align: center; }
+  .ms li.todo { color: var(--muted); }
+  .ms time { margin-left: auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .counters { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .counter { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+  .counter b { font-size: 18px; display: block; }
+  .counter small { color: var(--muted); }
+  .tl { max-height: 320px; overflow: auto; }
+  .tl li { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .tl .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+  .tl time { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tl code { font-size: 12px; background: var(--bg); padding: 1px 6px; border-radius: 6px; }
+  .tl .new { color: var(--accent); font-weight: 600; }
+  .empty { text-align: center; color: var(--muted); padding: 48px 16px; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Contigo · Progreso</h1>
+    <div class="sub">Avances observables por conversación. Sin mensajes ni teléfonos completos.</div>
+  </div>
+  <div class="sub" id="status">Cargando…</div>
+</header>
+<main id="root"></main>
+
+<script>
+const root = document.getElementById("root");
+const statusEl = document.getElementById("status");
+const fmt = new Intl.DateTimeFormat("es-CL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const time = (iso) => (iso ? fmt.format(new Date(iso)) : "");
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value; else node.setAttribute(key, value);
+  }
+  for (const child of children) {
+    if (child == null) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+function modeClass(mode) {
+  if (mode === "PAUSA_RECHAZO" || mode === "PAUSA_COMPRA") return "pill pause";
+  if (mode === "APOYO") return "pill support";
+  return "pill";
+}
+
+function renderConversation(c) {
+  const ladder = el("div", { class: "ladder" }, ...c.ladder.map((s) =>
+    el("div", { class: "step" + (s.reached ? " reached" : "") + (s.current ? " current" : ""), title: s.label },
+       el("div", { class: "bar" }), el("span", {}, `${s.mode} · ${s.label}`))));
+
+  const milestones = el("ul", { class: "ms" }, ...c.milestones.map((m) =>
+    el("li", { class: m.at ? "" : "todo" },
+       el("span", { class: "mark" }, m.at ? "✅" : "○"), el("span", {}, m.label),
+       m.at ? el("time", {}, time(m.at)) : null)));
+
+  const counters = el("div", { class: "counters" },
+    el("div", { class: "counter" }, el("b", {}, c.turns), el("small", {}, "turnos")),
+    el("div", { class: "counter" }, el("b", {}, c.counters.pausas_respetadas), el("small", {}, "pausas respetadas")),
+    el("div", { class: "counter" }, el("b", {}, c.counters.pausas_antes_de_comprar), el("small", {}, "pausas antes de comprar")),
+    el("div", { class: "counter" }, el("b", {}, c.figures_hidden ? "Sí" : "No"), el("small", {}, "cifras ocultas por su preferencia")));
+
+  const timeline = el("ul", { class: "tl" }, ...c.timeline.map((t) =>
+    el("li", {},
+       el("div", { class: "row" },
+          el("time", {}, time(t.at)), el("span", {}, `#${t.turn}`),
+          el("code", {}, t.mode_from === t.mode_to ? t.mode_to : `${t.mode_from} → ${t.mode_to}`),
+          el("span", {}, t.intent), t.event ? el("code", {}, t.event) : null),
+       t.milestones.length ? el("div", { class: "new" }, "★ " + t.milestones.join(" · ")) : null)));
+
+  return el("section", { class: "card" },
+    el("div", { class: "head" },
+       el("div", {}, el("div", { class: "who" }, `Conversación ${c.user}`),
+          el("div", { class: "sub" }, `id ${c.id} · última actividad ${time(c.updated_at)}`)),
+       el("span", { class: modeClass(c.mode) }, `${c.mode} · ${c.mode_label}`)),
+    ladder,
+    el("div", { class: "grid" },
+       el("div", {}, el("h2", {}, "Avances"), milestones, counters),
+       el("div", {}, el("h2", {}, "Línea de tiempo"), timeline,
+          el("div", { class: "note" }, "Etiquetas del agente por turno. Los mensajes no se muestran."))));
+}
+
+async function refresh() {
+  try {
+    const response = await fetch("/dashboard/api/conversations", { cache: "no-store", credentials: "same-origin" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    root.replaceChildren(...(data.conversations.length
+      ? data.conversations.map(renderConversation)
+      : [el("div", { class: "card empty" }, "Todavía no hay conversaciones. Escribe \"Hola\" por WhatsApp.")]));
+    statusEl.textContent = `Actualizado ${time(data.generated_at)} · se refresca cada 3 s`;
+  } catch (error) {
+    statusEl.textContent = `Sin conexión (${error.message}). Reintentando…`;
+  }
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

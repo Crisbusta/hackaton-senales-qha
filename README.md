@@ -192,6 +192,22 @@ real es todavía más largo.
 Patricia, pagando $100.000: 13 meses frente a 19 pagando solo el mínimo, con $97.662 menos de
 intereses.
 
+## Dashboard de progreso
+
+`/dashboard` muestra, para cada conversación, la **Escalera** (E0–E4), los **avances logrados**
+con su hora, contadores (turnos, pausas respetadas) y una **línea de tiempo** por turno (modo,
+etiqueta del agente y evento). Se actualiza cada 3 s, así que se puede proyectar junto a
+WhatsApp en la demo.
+
+- **Avances basados en evidencia** (`conversation/progress.py`, principio 8): "vio su pago
+  mínimo" se marca solo si la cifra **aparece en la respuesta que ella recibió**, no por haber
+  llegado a un modo. Si pidió no ver cifras, no se marca ningún avance de cifras.
+- **Privacidad:** nunca muestra el texto de los mensajes ni el teléfono completo (`***3931`).
+- **Acceso:** autenticación básica del navegador con `DASHBOARD_PASSWORD` (cualquier usuario).
+  Sin contraseña configurada, responde 404.
+- Usa la interfaz del repositorio: hoy se vacía con cada deploy o `/reiniciar`; con PostgreSQL
+  conservará el historial sin cambios en el dashboard.
+
 ## Casos P0 automáticos
 
 `scripts/p0_runner.py` ejecuta los casos de `docs/casos_p0.md` contra el flujo completo. Los
@@ -237,6 +253,7 @@ podría caer en una distinta.
 | `AGENT_IMPL` | `llm` (o `mock` para probar sin costo) |
 | `OPENAI_API_KEY` | 🔒 solo si `AGENT_IMPL=llm` |
 | `MOCK_BANK_SCENARIO` | `patricia` |
+| `DASHBOARD_PASSWORD` | 🔒 Contraseña de `/dashboard`. Vacía: desactivado |
 | `DEMO_ADMIN_NUMBERS` | Números E.164 separados por coma que pueden escribir `/reiniciar` para borrar **su propia** conversación (ensayo de la demo). Vacío: desactivado |
 
 Los secretos (🔒) se cargan en el panel de Railway, nunca en el repositorio.
