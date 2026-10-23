@@ -1,0 +1,74 @@
+{
+  "_nota": "Datos 100 % FICTICIOS para la demo. Banco inexistente. Las cifras de la tarjeta coinciden con el estado de cuenta ficticio de docs/casos_p0.md y tests/agent/fixtures/statement_complete.json.",
+  "bank_name": "Banco Austral (ficticio)",
+  "retrieved_at": "2026-10-23T09:00:00-03:00",
+  "customer": {"customer_id": "cus_demo_patricia", "first_name": "Patricia"},
+  "accounts": [
+    {
+      "account_id": "acc_vista_01",
+      "type": "cuenta_vista",
+      "masked_number": "**** 3307",
+      "available_balance": 87430,
+      "current_balance": 87430
+    }
+  ],
+  "transactions": [
+    {"transaction_id": "tx01", "account_id": "acc_vista_01", "booked_at": "2026-09-04", "description": "Transferencia recibida - ventas catálogo", "amount": 185000, "category": "ingreso"},
+    {"transaction_id": "tx02", "account_id": "acc_vista_01", "booked_at": "2026-09-05", "description": "Farmacia", "amount": -38900, "category": "salud"},
+    {"transaction_id": "tx03", "account_id": "acc_vista_01", "booked_at": "2026-09-06", "description": "Supermercado", "amount": -52300, "category": "alimentacion"},
+    {"transaction_id": "tx04", "account_id": "acc_vista_01", "booked_at": "2026-09-10", "description": "Cuota crédito de consumo", "amount": -58900, "category": "pago_credito"},
+    {"transaction_id": "tx05", "account_id": "acc_vista_01", "booked_at": "2026-09-10", "description": "Cuenta de luz", "amount": -24800, "category": "servicios_basicos"},
+    {"transaction_id": "tx06", "account_id": "acc_vista_01", "booked_at": "2026-09-12", "description": "Cuenta de agua", "amount": -14600, "category": "servicios_basicos"},
+    {"transaction_id": "tx07", "account_id": "acc_vista_01", "booked_at": "2026-09-15", "description": "Pago tarjeta de crédito", "amount": -71800, "category": "pago_tarjeta"},
+    {"transaction_id": "tx08", "account_id": "acc_vista_01", "booked_at": "2026-09-19", "description": "Transferencia recibida - ventas catálogo", "amount": 92000, "category": "ingreso"},
+    {"transaction_id": "tx09", "account_id": "acc_vista_01", "booked_at": "2026-09-20", "description": "Farmacia", "amount": -41200, "category": "salud"},
+    {"transaction_id": "tx10", "account_id": "acc_vista_01", "booked_at": "2026-09-22", "description": "Supermercado", "amount": -48700, "category": "alimentacion"},
+    {"transaction_id": "tx11", "account_id": "acc_vista_01", "booked_at": "2026-10-03", "description": "Transferencia recibida - ventas catálogo", "amount": 240000, "category": "ingreso"},
+    {"transaction_id": "tx12", "account_id": "acc_vista_01", "booked_at": "2026-10-04", "description": "Farmacia", "amount": -39500, "category": "salud"},
+    {"transaction_id": "tx13", "account_id": "acc_vista_01", "booked_at": "2026-10-05", "description": "Supermercado", "amount": -63100, "category": "alimentacion"},
+    {"transaction_id": "tx14", "account_id": "acc_vista_01", "booked_at": "2026-10-10", "description": "Cuota crédito de consumo", "amount": -58900, "category": "pago_credito"},
+    {"transaction_id": "tx15", "account_id": "acc_vista_01", "booked_at": "2026-10-10", "description": "Cuenta de luz", "amount": -26300, "category": "servicios_basicos"},
+    {"transaction_id": "tx16", "account_id": "acc_vista_01", "booked_at": "2026-10-12", "description": "Cuenta de agua", "amount": -15200, "category": "servicios_basicos"},
+    {"transaction_id": "tx17", "account_id": "acc_vista_01", "booked_at": "2026-10-14", "description": "Pago tarjeta de crédito", "amount": -72900, "category": "pago_tarjeta"},
+    {"transaction_id": "tx18", "account_id": "acc_vista_01", "booked_at": "2026-10-17", "description": "Transferencia recibida - ventas catálogo", "amount": 61000, "category": "ingreso"},
+    {"transaction_id": "tx19", "account_id": "acc_vista_01", "booked_at": "2026-10-18", "description": "Farmacia", "amount": -42600, "category": "salud"},
+    {"transaction_id": "tx20", "account_id": "acc_vista_01", "booked_at": "2026-10-19", "description": "Carga transporte público", "amount": -12000, "category": "transporte"},
+    {"transaction_id": "tx21", "account_id": "acc_vista_01", "booked_at": "2026-10-21", "description": "Supermercado", "amount": -55400, "category": "alimentacion"}
+  ],
+  "debit_cards": [
+    {"card_id": "dc_01", "masked_number": "**** 9154", "linked_account_id": "acc_vista_01", "status": "activa"}
+  ],
+  "credit_cards": [
+    {
+      "card_id": "cc_01",
+      "masked_number": "**** 6612",
+      "credit_limit": 1500000,
+      "total_debt": 1064000,
+      "statement": {
+        "period_end": "2026-10-15",
+        "due_date": "2026-11-03",
+        "billed_amount": 868000,
+        "minimum_payment": 74350,
+        "minimum_breakdown": {"interest": 23100, "installments": 43000, "principal": 8250},
+        "monthly_rate_pct": "2.8"
+      },
+      "installment_purchases": [
+        {"description": "Refrigerador", "purchased_at": "2026-05-20", "total_amount": 216000, "installment_amount": 18000, "total_installments": 12, "paid_installments": 5},
+        {"description": "Celular", "purchased_at": "2026-07-28", "total_amount": 155000, "installment_amount": 15500, "total_installments": 10, "paid_installments": 3},
+        {"description": "Tienda de ropa", "purchased_at": "2026-08-30", "total_amount": 57000, "installment_amount": 9500, "total_installments": 6, "paid_installments": 2}
+      ]
+    }
+  ],
+  "consumer_loans": [
+    {
+      "loan_id": "loan_01",
+      "original_amount": 1200000,
+      "outstanding_balance": 640000,
+      "installment_amount": 58900,
+      "total_installments": 24,
+      "paid_installments": 13,
+      "next_due_date": "2026-11-10",
+      "cae_pct": "32.4"
+    }
+  ]
+}

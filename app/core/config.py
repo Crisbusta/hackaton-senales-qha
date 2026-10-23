@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # TwiML; se deja margen para el resto del procesamiento.
     agent_timeout_s: float = 12.0
 
+    # Escenario ficticio del banco simulado (app/modules/banking/fixtures/<nombre>.json).
+    # Vacío: ningún usuario tiene banco vinculado.
+    mock_bank_scenario: str = "patricia"
+
     # OpenAI (se usan cuando agent_impl="llm").
     openai_api_key: str = ""
     # gpt-6.1-sol principal y gpt-6-luna de respaldo: 15/16 aciertos cada

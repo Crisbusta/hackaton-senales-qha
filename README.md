@@ -96,6 +96,29 @@ luego se implementará con PostgreSQL. Limitaciones:
 - No ofrece persistencia duradera.
 - La deduplicación por `MessageSid` solo aplica durante la vida del proceso.
 
+## Banco simulado
+
+`app/modules/banking/` entrega los datos bancarios del usuario a través de la interfaz
+`BankDataProvider`. Hoy la implementa `MockBankProvider`, que lee un escenario **100 %
+ficticio** desde `fixtures/` (`MOCK_BANK_SCENARIO=patricia`). Un proveedor regulado de
+Open Finance implementaría la misma interfaz sin cambiar el resto del backend.
+
+| Producto | Datos |
+|---|---|
+| Cuenta vista | Saldo disponible y movimientos categorizados (ingresos, salud, alimentación, servicios básicos…) |
+| Tarjeta de débito | Asociada a la cuenta |
+| Tarjeta de crédito | Cupo, deuda, facturado, pago mínimo y su desglose, vencimiento, tasa, compras en cuotas |
+| Crédito de consumo | Saldo, cuota, cuotas restantes, próximo vencimiento, CAE |
+
+`banking/service.py` traduce la tarjeta a `financial_data` con las mismas claves del estado
+de cuenta en PDF, y calcula resúmenes deterministas: flujo de caja mensual (ingresos variables,
+gastos esenciales) y panorama de deudas. Las cifras del escenario de Patricia coinciden con
+`docs/casos_p0.md`.
+
+Convenciones: montos en `int` (CLP), tasas en `Decimal`, banco ficticio (nunca una marca real).
+El banco solo se consulta con consentimiento explícito del usuario (pendiente de integrar
+en `ConversationService`).
+
 ## Tests y lint
 
 ```bash
