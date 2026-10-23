@@ -101,12 +101,15 @@ def test_diez_minutos_no_es_una_cifra_en_palabras():
 
 
 def test_motor_de_calculo_habilita_sus_cifras():
-    motor = {"meses": 43, "intereses_ahorrados": 123000}
+    # Los plazos en meses son salida del simulador, no campos del estado de
+    # cuenta: el contrato los pone en `calculations` ("montos en pesos y
+    # plazos en meses, los dos int"). Antes `meses_solo_minimo` viajaba en
+    # datos_pdf y pasaba porque la lista blanca tomaba datos completo.
+    motor = {"meses": 43, "meses_solo_minimo": 49, "intereses_ahorrados": 123000}
     r = validar(salida(
         "Con ese pago extra de $50.000 serian 43 meses en vez de 49.",
     ), {"modo": "E4", "puedes_ofrecer_continuar": False},
-        {"monto_elegido": {"valor": 50000, "estado": "confirmado"},
-         "meses_solo_minimo": {"valor": 49, "estado": "confirmado"}}, motor=motor)
+        {"monto_elegido": {"valor": 50000, "estado": "confirmado"}}, motor=motor)
     assert r.ok, r.validadores
 
 
@@ -151,7 +154,11 @@ def test_cifra_en_apoyo_falla():
     r = validar(salida("Te leo. Tu vencimiento sigue siendo el 3 de noviembre.",
                        etiqueta="cuidadora_agotada"), APOYO,
                 {"vencimiento": DATOS_E2["vencimiento"]})
-    assert r.validadores["coherencia_etiqueta_modo"] == "falla"
+    # APOYO no autoriza ningun campo, asi que ahora la ataja la lista blanca
+    # antes de llegar a coherencia_etiqueta_modo. Lo que importa es que no
+    # sale: una cifra en APOYO se rechaza, y cuanto antes, mejor.
+    assert not r.ok
+    assert r.validadores["lista_blanca_numerica"] == "falla"
 
 
 def test_apoyo_sin_cifras_pasa():
@@ -350,3 +357,60 @@ def test_angustia_fuerte_primera_vez_sigue_usando_el_texto_completo():
     r = validar(salida("Cualquier cosa.", etiqueta="angustia_fuerte"), E2, {})
     assert r.override["motivo"] == "texto_fijo_angustia_fuerte"
     assert "a salvo" in r.enviado.lower()
+
+
+# --- la lista blanca con la precarga del #12 ----------------------------
+#
+# Desde el #12 el backend precarga todos los campos de la Escalera en E0-E4,
+# para que ella no espere un turno cuando pide un dato del escalon siguiente.
+# `prompts.py` los vuelve a filtrar por modo, asi que el modelo solo ve los
+# del escalon actual; la lista blanca tiene que filtrar igual. Cuando tomaba
+# `datos` completo, una cifra que el modelo nunca vio igual pasaba la capa 4.
+
+E0 = {"modo": "E0", "puedes_ofrecer_continuar": False, "limites_ya_dichos": []}
+E1 = {"modo": "E1", "puedes_ofrecer_continuar": True, "limites_ya_dichos": []}
+
+
+def test_una_cifra_precargada_de_otro_escalon_no_pasa_en_e1():
+    """En E1 el modelo solo ve el vencimiento. El saldo viene precargado pero
+    no se le muestra, asi que si aparece es una alucinacion y se descarta."""
+    r = validar(salida("Vence el 3 de noviembre y debes $1.064.000."), E1, DATOS_E2)
+
+    assert not r.ok
+    assert r.validadores["lista_blanca_numerica"] == "falla"
+
+
+def test_el_dato_del_escalon_actual_si_pasa_con_la_precarga():
+    """El otro lado de la moneda: filtrar no puede romper el turno legitimo."""
+    r = validar(salida("Vence el 3 de noviembre."), E1, DATOS_E2)
+
+    assert r.ok, r.validadores
+
+
+def test_en_e0_ninguna_cifra_precargada_esta_autorizada():
+    r = validar(salida("Tu pago minimo es $74.350."), E0, DATOS_E2)
+
+    assert not r.ok
+    assert r.validadores["lista_blanca_numerica"] == "falla"
+
+
+def test_el_condicional_se_autoriza_con_la_etiqueta_de_este_turno():
+    """`facturado` esta precargado en E2, pero solo se autoriza si ella
+    pregunto por el en ESTE mensaje. La etiqueta es la que lo habilita."""
+    preguntando = validar(
+        salida("El monto facturado es $868.000.", etiqueta="pregunta_monto_facturado"),
+        E2_SIN_OFERTA,
+        DATOS_E2,
+    )
+    assert preguntando.ok, preguntando.validadores
+
+
+def test_el_condicional_no_se_autoriza_si_ella_no_pregunto():
+    sin_preguntar = validar(
+        salida("El monto facturado es $868.000.", etiqueta="solicitud_informacion"),
+        E2_SIN_OFERTA,
+        DATOS_E2,
+    )
+
+    assert not sin_preguntar.ok
+    assert sin_preguntar.validadores["lista_blanca_numerica"] == "falla"
