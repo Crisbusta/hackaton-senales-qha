@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     # Implementación del agente: "mock" (default) o "llm".
     agent_impl: Literal["mock", "llm"] = "mock"
+    # Presupuesto total por turno del agente. Twilio espera ~15 s la respuesta
+    # TwiML; se deja margen para el resto del procesamiento.
+    agent_timeout_s: float = 12.0
 
     # Twilio (se usan desde feat/twilio-webhook).
     twilio_auth_token: str = ""

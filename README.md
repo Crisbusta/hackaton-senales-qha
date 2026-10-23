@@ -62,6 +62,40 @@ solicitudes serán rechazadas con `403`.
 Los logs usan `MessageSid` como id de correlación, enmascaran el número (`***5678`) y
 nunca registran el contenido del mensaje.
 
+## Conversación
+
+`ConversationService` (`app/modules/conversation/`) coordina cada turno:
+
+1. **Deduplica** por `MessageSid`: un reenvío de Twilio recibe TwiML vacío.
+2. Recupera el estado del usuario (modo, preferencias, historial).
+3. Invoca al agente con un **presupuesto de tiempo** (`AGENT_TIMEOUT_S`, 12 s por defecto).
+   Si se excede o falla, el usuario recibe un mensaje amable y el turno no se guarda.
+4. Aplica **reglas deterministas** sobre el evento del agente:
+
+   | Evento | Efecto |
+   |---|---|
+   | `DECLINED_BALANCE_REVIEW` / `AVOID_FINANCIAL_REVIEW` | `show_financial_figures=False`, modo `PAUSA_RECHAZO` |
+   | `REQUESTED_BALANCE` | `show_financial_figures=True` (la solicitud actual prevalece) |
+   | `CRISIS_SUPPORT_NEEDED` | modo `APOYO` |
+
+   Las transiciones entre escalones E0–E4 quedan pendientes de la tabla de T01/T06.
+5. Si el usuario pidió no ver cifras y la respuesta contiene un monto, se reemplaza por un
+   texto neutro (última barrera, independiente del agente).
+6. Persiste historial, eventos y preferencias.
+
+El agente se elige con `AGENT_IMPL` (`mock` por defecto). `MockAgent` responde por
+palabras clave y nunca muestra cifras.
+
+### Persistencia temporal (en memoria)
+
+`InMemoryConversationRepository` implementa la interfaz `ConversationRepository`, que
+luego se implementará con PostgreSQL. Limitaciones:
+
+- Los datos desaparecen al reiniciar (también con cada recarga de `--reload`).
+- No funciona con múltiples réplicas ni workers.
+- No ofrece persistencia duradera.
+- La deduplicación por `MessageSid` solo aplica durante la vida del proceso.
+
 ## Tests y lint
 
 ```bash
