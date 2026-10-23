@@ -192,6 +192,40 @@ real es todavía más largo.
 Patricia, pagando $100.000: 13 meses frente a 19 pagando solo el mínimo, con $97.662 menos de
 intereses.
 
+## Despliegue (Docker + Railway)
+
+```bash
+docker build -t contigo .
+docker run -p 8000:8000 --env-file .env contigo
+```
+
+La imagen usa `uv sync --frozen --no-dev`, corre con un usuario sin privilegios y escucha en
+`$PORT` (Railway lo inyecta). `railway.json` define el healthcheck (`/health`) y **una sola
+réplica**: el estado de la conversación está en memoria, así que con dos réplicas cada mensaje
+podría caer en una distinta.
+
+### Variables en Railway
+
+| Variable | Valor |
+|---|---|
+| `APP_ENV` | `production` (obliga a validar la firma y apaga la traza del agente) |
+| `PUBLIC_BASE_URL` | `https://<servicio>.up.railway.app`, sin slash final |
+| `TWILIO_AUTH_TOKEN` | 🔒 Auth Token de Twilio |
+| `AGENT_IMPL` | `llm` (o `mock` para probar sin costo) |
+| `OPENAI_API_KEY` | 🔒 solo si `AGENT_IMPL=llm` |
+| `MOCK_BANK_SCENARIO` | `patricia` |
+
+Los secretos (🔒) se cargan en el panel de Railway, nunca en el repositorio.
+
+### Twilio
+
+En la configuración del sender de WhatsApp: **Webhook URL for incoming messages** =
+`https://<servicio>.up.railway.app/webhooks/whatsapp` (POST). El Status callback va vacío.
+Mientras el webhook apunte a Railway, ngrok local no recibe mensajes.
+
+**Limitaciones:** cada nuevo deploy reinicia el proceso y se pierden las conversaciones en
+memoria (en la demo, Patricia vuelve a empezar desde "Hola").
+
 ## Tests y lint
 
 ```bash
