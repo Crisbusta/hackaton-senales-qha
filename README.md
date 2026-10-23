@@ -164,6 +164,34 @@ En las pausas, APOYO y CIERRE no se precarga nada. Si el usuario pidió no ver c
 consentimiento o si el banco falla, no viaja ninguna cifra. Una cifra sin fuente verificable
 nunca se envía.
 
+## Motor financiero (T10)
+
+`app/modules/finance/calculator.py` hace todos los cálculos de forma determinista, con
+`Decimal`. Los resultados se entregan en pesos enteros. **El LLM nunca calcula**: solo redacta
+lo que llega en `calculations`.
+
+| Función | Qué responde |
+|---|---|
+| `compare_with_minimum` | Meses e intereses pagando un monto fijo frente a pagar solo el mínimo |
+| `affordability` | Si el pago deja cubiertos los gastos esenciales del último mes (principio 7) |
+| `installment_effect` | Cuánto sube el mínimo con una compra en cuotas (caso C05) |
+
+**Supuestos (los resultados son ilustrativos):** interés mensual compuesto a la tasa del estado
+de cuenta, pago fijo, sin compras nuevas ni comisiones, y cuotas sin interés. "Pagar solo el
+mínimo" supone un mínimo fijo; en la realidad el mínimo baja junto con el saldo, así que el plazo
+real es todavía más largo.
+
+**Cómo se activa en la conversación** (`conversation/simulation.py`, antes de llamar al agente):
+
+- **Simular un pago:** desde E2 en adelante, "¿y si pago 100 mil?" (también "$100.000" o
+  "80 lucas") pasa a **E4** y envía `monto_elegido` más los resultados en el mismo turno. "Me
+  pagaron 100 mil" no cuenta como pago.
+- **Cuánto suma la cuota:** en PAUSA_COMPRA, si elige la opción 2 y luego dice "$60.000 en 6
+  cuotas", se envía `minimo_con_cuota` y `cuota_mensual`. Si la compra es esencial, no se calcula.
+
+Patricia, pagando $100.000: 13 meses frente a 19 pagando solo el mínimo, con $97.662 menos de
+intereses.
+
 ## Tests y lint
 
 ```bash

@@ -1,9 +1,9 @@
 """Coordinador del flujo conversacional.
 
-Un turno: deduplicar → recuperar estado → armar `financial_data` desde el
-banco, filtrado por modo → invocar al agente (con presupuesto de tiempo) →
-aplicar reglas deterministas sobre el evento → proteger la preferencia de no
-ver cifras → persistir → devolver la respuesta.
+Un turno: deduplicar → recuperar estado → detectar si pidió una simulación
+(T10) → armar `financial_data` y `calculations` desde el banco → invocar al
+agente (con presupuesto de tiempo) → aplicar reglas deterministas sobre el
+evento → verificar las cifras de la respuesta → persistir → responder.
 
 El agente interpreta y redacta; el estado (modo, preferencias) lo decide
 este servicio con reglas deterministas.
@@ -25,10 +25,12 @@ from app.modules.agent.interface import (
     ConversationMode,
     FinancialField,
     Intent,
+    calculations_allowed,
 )
 from app.modules.banking.provider import BankDataProvider
+from app.modules.banking.schemas import BankSnapshot
 from app.modules.banking.service import credit_card_fields
-from app.modules.conversation import figures, transitions
+from app.modules.conversation import figures, simulation, transitions
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.conversation.schemas import ConversationState, RecordedEvent, utc_now
 from app.modules.whatsapp.schemas import IncomingMessage
@@ -149,29 +151,35 @@ class ConversationService:
         self._agent_timeout_s = agent_timeout_s
         self._bank = bank
 
-    async def _financial_data(
-        self, state: ConversationState, ctx: str
-    ) -> dict[str, FinancialField]:
-        """Los datos del banco que corresponden al modo de este turno.
+    async def _snapshot(self, state: ConversationState, ctx: str) -> BankSnapshot | None:
+        """Datos del banco para este turno, o None si no corresponde usarlos.
 
-        Inyección mínima: solo viajan los campos de `fields_for_mode()`. Si el
-        usuario pidió no ver cifras, no viaja ninguno. Si el banco falla, el
-        turno sigue sin cifras en vez de caerse.
+        Si el usuario pidió no ver cifras, ni se consultan. Si el banco falla,
+        el turno sigue sin cifras en vez de caerse.
         """
         if self._bank is None or state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False:
-            return {}
+            return None
         try:
-            snapshot = await self._bank.get_snapshot(state.user_id)
+            return await self._bank.get_snapshot(state.user_id)
         except Exception:
             logger.warning(
                 "Bank data unavailable, continuing without figures %s", ctx, exc_info=True
             )
-            return {}
+            return None
+
+    @staticmethod
+    def _financial_data(
+        state: ConversationState,
+        snapshot: BankSnapshot | None,
+        simulated: dict[str, FinancialField],
+    ) -> dict[str, FinancialField]:
+        """Los campos que viajan al agente: precarga en los escalones, filtro por modo fuera."""
         if snapshot is None or not snapshot.credit_cards:
             return {}
-
-        available = credit_card_fields(snapshot.credit_cards[0])
-        sent = figures.fields_to_send(state.mode, state.last_intent)
+        available = credit_card_fields(snapshot.credit_cards[0]) | simulated
+        sent = figures.fields_to_send(
+            state.mode, state.last_intent, state.installment_calc_requested
+        )
         return {name: available[name] for name in sent if name in available}
 
     async def _call_agent(self, request: AgentRequest, timeout_s: float) -> AgentResponse:
@@ -197,11 +205,16 @@ class ConversationService:
         reintenta una vez con solo los datos permitidos; si no hay tiempo o el
         reintento tampoco cumple, sale un texto sin cifras.
         """
-        fields = figures.allowed_fields(state.mode, response.intent, request.previous_intent)
+        requested = request.requested_installment_calculation
+        fields = figures.allowed_fields(
+            [request.mode, state.mode], [response.intent, request.previous_intent], requested
+        )
         own_amounts = [request.message] + (
             [str(response.mentioned_amount)] if response.mentioned_amount is not None else []
         )
-        allowed = figures.allowed_amounts(request.financial_data, fields, own_amounts)
+        allowed = figures.allowed_amounts(
+            request.financial_data, fields, own_amounts, request.calculations
+        )
         if not figures.unexpected_amounts(response.message, allowed):
             return response.message
 
@@ -248,7 +261,14 @@ class ConversationService:
         else:
             state.acknowledgement_answered = False
 
-        financial_data = await self._financial_data(state, ctx)
+        # T10: si pidió simular un pago o el cálculo de una cuota, el modo se
+        # ajusta antes de llamar al agente, para que el resultado viaje ya.
+        simulation.plan_turn(state, message.body)
+        snapshot = await self._snapshot(state, ctx)
+        simulated, calculations = simulation.build_turn_figures(state, snapshot, message.body)
+        if not calculations_allowed(state.mode, state.installment_calc_requested):
+            calculations = {}
+        financial_data = self._financial_data(state, snapshot, simulated)
         request = AgentRequest(
             user_id=message.user_id,
             message=message.body,
@@ -261,6 +281,8 @@ class ConversationService:
             can_offer_continue=self._can_offer_continue(state),
             can_clarify_route=self._can_clarify_route(state),
             already_stated_limits=list(state.stated_limits),
+            calculations=calculations,
+            requested_installment_calculation=state.installment_calc_requested,
         )
 
         started = time.monotonic()
@@ -269,6 +291,11 @@ class ConversationService:
         previous_mode = state.mode
         apply_event(state, response.event, message.message_sid)
         self._apply_transition(state, response)
+        if response.intent == Intent.INSTALLMENT_INTENT:
+            state.installment_essential = response.essential
+        if state.mode != ConversationMode.INSTALLMENT_PAUSE:
+            state.installment_calc_requested = False
+            state.installment_essential = None
 
         reply = response.message
         # Con la negativa activa no hay datos que verificar: la barrera de
@@ -301,7 +328,8 @@ class ConversationService:
         await self._repository.save(state)
 
         logger.info(
-            "Turn processed %s turn=%d intent=%s event=%s mode=%s->%s financial_fields=%d",
+            "Turn processed %s turn=%d intent=%s event=%s mode=%s->%s "
+            "financial_fields=%d calculations=%d",
             ctx,
             state.turn_count,
             response.intent,
@@ -309,5 +337,6 @@ class ConversationService:
             previous_mode,
             state.mode,
             len(financial_data),
+            len(calculations),
         )
         return reply

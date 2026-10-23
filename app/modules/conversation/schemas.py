@@ -48,4 +48,12 @@ class ConversationState(BaseModel):
     # AB8: a un "ok" o "gracias" sin contenido se responde una vez; el
     # siguiente no recibe respuesta. Se reinicia cuando ella escribe algo.
     acknowledgement_answered: bool = False
+
+    # T10: el monto de pago que ella eligió simular (entra a E4 como monto_elegido).
+    chosen_payment: int | None = None
+    # T10: en PAUSA_COMPRA eligió la opción 2, ver cuánto le suma la cuota.
+    installment_calc_requested: bool = False
+    # Si la compra en cuotas es esencial (remedios), no se ofrece pausa ni cálculo.
+    installment_essential: bool | None = None
+
     updated_at: datetime = Field(default_factory=utc_now)
