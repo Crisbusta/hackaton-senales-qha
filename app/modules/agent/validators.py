@@ -224,6 +224,21 @@ def _respaldo(modo, estado=None):
     return texto
 
 
+def respaldo_sin_modelo(estado, motivo):
+    """El texto de respaldo del modo cuando el modelo no dio ninguna salida.
+
+    Pasa cuando el proveedor falla o cuando el presupuesto del turno se
+    agoto. Es la razon de existir de la capa 4: siempre hay algo que
+    decirle, y es un texto que C validó, no un error.
+    """
+    modo = estado.get("modo", "E0")
+    return Resultado(
+        enviado=_respaldo(modo, estado),
+        validadores={n: "n/a" for n in NOMBRES},
+        override={"aplicado": True, "motivo": motivo},
+    )
+
+
 def validar(salida, estado, datos, motor=None, intento=1):
     """salida: el dict de cuatro campos del modelo. estado/datos: lo inyectado."""
     etiqueta = salida.get("etiqueta")

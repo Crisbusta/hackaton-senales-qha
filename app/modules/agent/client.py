@@ -102,6 +102,15 @@ def call_model(static_prompt: str, context: str, correction: str | None = None):
     try:
         response = _call_one(model, messages, settings.openai_temperature)
     except OpenAIError as exc:
+        restante = settings.agent_turn_budget_s - (time.monotonic() - started)
+        if restante < settings.openai_timeout_s:
+            # Intentar el respaldo dejaria el turno fuera del presupuesto y
+            # Twilio cortaria antes de que llegue. Mejor fallar ahora: el
+            # turno responde con su texto de respaldo, que no necesita al
+            # modelo.
+            raise IntegrationError(
+                f"no budget left for the fallback model after {model}"
+            ) from exc
         logger.warning("modelo principal %s fallo (%s); usando respaldo", model, exc)
         model = settings.openai_fallback_model
         try:

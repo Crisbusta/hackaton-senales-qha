@@ -14,7 +14,9 @@ Orden de un turno:
 
 import asyncio
 import logging
+import time
 
+from app.core.config import get_settings
 from app.modules.agent import observability as obs
 from app.modules.agent import prefilter, prompts, validators
 from app.modules.agent.client import call_model
@@ -26,6 +28,7 @@ from app.modules.agent.interface import (
     ConversationMode,
     FieldStatus,
 )
+from app.shared.exceptions import IntegrationError
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +95,36 @@ def _build_calculations(request: AgentRequest) -> dict:
     )
 
 
+def _backup_response(request, state, motivo, started, log_path):
+    """Respuesta determinista cuando el modelo no dio nada."""
+    result = validators.respaldo_sin_modelo(state, motivo)
+    obs.registrar(
+        conv=request.user_id,
+        intentos=1,
+        latencia_total_ms=int((time.monotonic() - started) * 1000),
+        turno=0,
+        entrada=request.message,
+        prefiltro=(False, None),
+        estado_antes=state,
+        contexto=None,
+        modelo={"nombre": motivo, "temp": None, "latencia_ms": None,
+                "tokens_in": 0, "tokens_out": 0},
+        salida_cruda=None,
+        resultado=result,
+        estado_despues=state,
+        regla_aplicada=motivo,
+        ruta=log_path,
+    )
+    return AgentResponse(message=result.enviado, intent="UNKNOWN", event=None)
+
+
+def _budget_left_for_one_more_call(started: float) -> bool:
+    """¿Alcanza el presupuesto del turno para otra llamada al modelo?"""
+    settings = get_settings()
+    elapsed = time.monotonic() - started
+    return settings.agent_turn_budget_s - elapsed >= settings.openai_timeout_s
+
+
 def _build_history(request: AgentRequest) -> list[dict]:
     """Los últimos turnos, para resolver referencias ("sí", "la segunda").
 
@@ -105,6 +138,7 @@ def _build_history(request: AgentRequest) -> list[dict]:
 
 def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None):
     """Un turno completo, sincrónico. `call` se inyecta en los tests."""
+    started = time.monotonic()
     state = _build_state(request)
     data = _build_data(request)
     calculations = _build_calculations(request)
@@ -137,20 +171,46 @@ def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None
             request.requested_installment_calculation,
             history,
         )
-        raw, metadata = call(
-            prompts.ESTATICO,
-            context + "\n\nMENSAJE DE PATRICIA: " + request.message,
-        )
+        try:
+            raw, metadata = call(
+                prompts.ESTATICO,
+                context + "\n\nMENSAJE DE PATRICIA: " + request.message,
+            )
+        except IntegrationError as exc:
+            # El proveedor fallo o el presupuesto se agoto. No se propaga:
+            # hay un texto de respaldo del modo, validado por C, y es mucho
+            # mejor que dejarla sin respuesta. Esta es la capa 4.
+            logger.warning("sin salida del modelo (%s); va el texto de respaldo", exc)
+            return _backup_response(
+                request, state, "sin_salida_del_modelo", started, log_path
+            )
 
     result = validators.validar(raw, state, data, calculations or None)
+    attempts = 1
 
     if result.enviado is None:
-        # El primer intento falló un chequeo: un reintento nombrándolo.
-        raw, metadata = call(
-            prompts.ESTATICO,
-            context + "\n\nMENSAJE DE PATRICIA: " + request.message,
-            result.correccion,
-        )
+        # El primer intento falló un chequeo. Un reintento nombrándolo, pero
+        # solo si cabe en el presupuesto: medido contra el proveedor real, un
+        # turno con respaldo y reintento llegó a 16 s y Twilio corta a los
+        # 15. Si no cabe, se re-valida como segundo intento, que devuelve el
+        # texto de respaldo del modo sin llamar a nadie.
+        if _budget_left_for_one_more_call(started):
+            try:
+                raw, metadata = call(
+                    prompts.ESTATICO,
+                    context + "\n\nMENSAJE DE PATRICIA: " + request.message,
+                    result.correccion,
+                )
+                attempts = 2
+            except IntegrationError as exc:
+                logger.warning("el reintento fallo (%s); va el texto de respaldo", exc)
+                return _backup_response(
+                    request, state, "reintento_sin_salida", started, log_path
+                )
+        else:
+            logger.warning(
+                "sin presupuesto para el reintento de validacion; va el texto de respaldo"
+            )
         result = validators.validar(raw, state, data, calculations or None, intento=2)
 
     if triggered:
@@ -162,6 +222,8 @@ def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None
 
     obs.registrar(
         conv=request.user_id,
+        intentos=attempts,
+        latencia_total_ms=int((time.monotonic() - started) * 1000),
         turno=0,  # el backend es dueño del contador; acá no se infiere
         entrada=request.message,
         prefiltro=(triggered, pattern),

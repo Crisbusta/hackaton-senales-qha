@@ -11,7 +11,9 @@ import pathlib
 
 import pytest
 
+from app.core.config import Settings
 from app.modules.agent import observability as obs
+from app.modules.agent import service
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
     Agent,
@@ -467,3 +469,38 @@ def test_the_trace_can_be_switched_off(monkeypatch, tmp_path):
 
     assert "74.350" in response.message  # el turno responde igual
     assert list(tmp_path.glob("*.jsonl")) == []  # pero no deja rastro en disco
+
+
+# --- presupuesto del turno (medido contra el proveedor real) -----------
+
+def test_no_budget_means_no_retry(monkeypatch, log_path):
+    """Twilio corta a los 15 s. Medido, un turno con respaldo y reintento
+    llego a 16: si no cabe otra llamada, sale el texto de respaldo del modo,
+    que es determinista y no necesita al modelo."""
+    monkeypatch.setattr(
+        service, "get_settings", lambda: Settings(agent_turn_budget_s=0.0))
+    fake = FakeModel([_output("Te cobran como $30.000 de interes.")])
+
+    response = run_turn(
+        _request("cuanto me cobran", can_offer_continue=True),
+        call=fake,
+        log_path=log_path,
+    )
+
+    assert fake.calls == 1  # no se gasto un segundo intento
+    assert "30.000" not in response.message
+    assert "ordenarlo bien" in response.message
+
+
+def test_the_trace_shows_that_a_turn_needed_two_calls(log_path):
+    """`modelo.latencia_ms` es solo la ultima llamada: sin `intentos`, un
+    turno de 16 s se veia como uno de 6."""
+    fake = FakeModel([
+        _output("Te cobran como $30.000."),
+        _output("El pago minimo es $74.350."),
+    ])
+    run_turn(_request("cuanto me cobran"), call=fake, log_path=log_path)
+
+    linea = obs.leer(log_path)[0]
+    assert linea["intentos"] == 2
+    assert linea["latencia_total_ms"] >= 0

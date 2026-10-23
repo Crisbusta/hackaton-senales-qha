@@ -47,7 +47,8 @@ def seudonimo(conv):
 
 def registrar(conv, turno, entrada, prefiltro, estado_antes, contexto,
               modelo, salida_cruda, resultado, estado_despues,
-              regla_aplicada=None, ruta=None):
+              regla_aplicada=None, ruta=None, intentos=1,
+              latencia_total_ms=None):
     """Los tres campos que hacen que esto sirva: regla_aplicada, validadores
     y override."""
     linea = {
@@ -62,6 +63,10 @@ def registrar(conv, turno, entrada, prefiltro, estado_antes, contexto,
             "movimientos": _movimientos(contexto),
         },
         "modelo": modelo,
+        # `modelo.latencia_ms` es solo la ultima llamada. Un turno con
+        # reintento de validacion hace dos, y sin esto la traza no lo mostraba.
+        "intentos": intentos,
+        "latencia_total_ms": latencia_total_ms,
         "salida_cruda": salida_cruda,
         "validadores": resultado.validadores,
         "override": resultado.override,

@@ -81,3 +81,23 @@ def test_the_client_has_a_short_timeout_and_no_internal_retries(monkeypatch):
 
     assert creados["timeout"] == 6.0
     assert creados["max_retries"] == 0
+
+
+def test_the_fallback_is_skipped_when_it_would_not_fit(monkeypatch):
+    """Llamar al respaldo cuando ya no cabe deja el turno fuera del
+    presupuesto y Twilio corta antes de que llegue la respuesta."""
+    ajustes = Settings(openai_api_key="test", openai_timeout_s=7.0,
+                       agent_turn_budget_s=7.0)
+    monkeypatch.setattr(client, "get_settings", lambda: ajustes)
+    usados = []
+
+    def falla(model, messages, temperature):
+        usados.append(model)
+        raise APITimeoutError(request=None)
+
+    monkeypatch.setattr(client, "_call_one", falla)
+
+    with pytest.raises(IntegrationError):
+        client.call_model("sys", "ctx")
+
+    assert usados == ["gpt-6.1-sol"]  # el respaldo no se intento

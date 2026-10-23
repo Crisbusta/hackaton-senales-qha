@@ -136,9 +136,14 @@ Para correrlo de verdad hace falta `AGENT_IMPL=llm` y `OPENAI_API_KEY` en
 el `.env`. Los tests usan un modelo simulado: no gastan tokens ni salen a
 la red.
 
-El cliente usa `OPENAI_TIMEOUT_S` (6 s) y sin reintentos internos: Twilio
-corta el webhook a los 15 s, y un turno puede sumar modelo principal,
-respaldo y reintento de validación.
+**Presupuesto de tiempo.** Twilio corta el webhook a los 15 s. Medido
+contra el proveedor real: una llamada tarda p50 ~4,5 s y hasta 7,3 s, y el
+peor caso observado (principal + respaldo + reintento de validación) fueron
+16 s. Por eso el cliente usa `OPENAI_TIMEOUT_S=7` sin reintentos internos y
+el turno tiene un presupuesto total (`AGENT_TURN_BUDGET_S=13`): cuando lo
+que queda no alcanza para otra llamada, sale el texto de respaldo del modo
+en vez de arriesgar que Twilio corte. Si el proveedor falla del todo
+también sale ese texto: nunca una excepción.
 
 `observability.py` deja una línea JSONL por turno, para depurar y para el
 pitch. Guarda el mensaje completo y la respuesta con cifras, así que viene
