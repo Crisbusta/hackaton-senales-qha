@@ -52,6 +52,11 @@ STEP_BY_STEP_REPLY = "Vamos de a poco. ¿Quieres que lo veamos paso a paso?"
 # Tiempo mínimo que debe quedar del presupuesto para intentar un reintento.
 MIN_RETRY_S = 3.0
 
+# Modos cuya respuesta depende del modo y que se pueden ESTRENAR en el mismo turno:
+# al entrar, se vuelve a pedir la respuesta con el modo nuevo. PAUSA_RECHAZO y
+# APOYO no lo necesitan: responden con textos fijos según la etiqueta.
+REANSWER_ON_ENTRY = (ConversationMode.INSTALLMENT_PAUSE,)
+
 NO_FIGURES_REPLY = (
     "Dejemos los números de lado por ahora, como me pediste. Aquí estoy cuando quieras retomarlo."
 )
@@ -190,6 +195,56 @@ class ConversationService:
         except Exception as exc:
             raise IntegrationError("Agent failed") from exc
 
+    async def _reanswer_on_mode_entry(
+        self,
+        state: ConversationState,
+        request: AgentRequest,
+        response: AgentResponse,
+        previous_mode: ConversationMode,
+        started: float,
+        ctx: str,
+    ) -> tuple[AgentRequest, AgentResponse]:
+        """Si el turno ENTRÓ a un modo cuya respuesta depende del modo, se pide de nuevo.
+
+        La transición ocurre después de que el agente responde: si ella dice
+        "me dan ganas de comprar en cuotas" en E0, el agente redactó en E0 y
+        las dos opciones de PAUSA_COMPRA llegarían un turno tarde. Se le vuelve
+        a preguntar una sola vez con el modo nuevo. La clasificación del turno
+        (etiqueta, evento, esencial) es la del primer llamado; del segundo solo
+        se usa la redacción. Si no queda tiempo o falla, queda la primera.
+        """
+        if (
+            state.mode not in REANSWER_ON_ENTRY
+            or state.mode == previous_mode
+            or response.protected_text
+        ):
+            return request, response
+        remaining = self._agent_timeout_s - (time.monotonic() - started)
+        if remaining < MIN_RETRY_S:
+            logger.info("No time to re-answer after entering mode=%s %s", state.mode, ctx)
+            return request, response
+
+        reentry = request.model_copy(
+            update={
+                "mode": state.mode,
+                "max_mode_reached": state.max_mode_reached,
+                "previous_intent": response.intent,
+                "financial_data": {},
+                "calculations": {},
+                "requested_installment_calculation": False,
+                "can_offer_continue": False,
+            }
+        )
+        try:
+            second = await self._call_agent(reentry, remaining)
+        except IntegrationError:
+            logger.warning("Re-answer failed, keeping first reply %s", ctx, exc_info=True)
+            return request, response
+        logger.info("Re-answered after entering mode=%s %s", state.mode, ctx)
+        return reentry, response.model_copy(
+            update={"message": second.message, "protected_text": second.protected_text}
+        )
+
     async def _enforce_mode_figures(
         self,
         state: ConversationState,
@@ -296,6 +351,9 @@ class ConversationService:
         if state.mode != ConversationMode.INSTALLMENT_PAUSE:
             state.installment_calc_requested = False
             state.installment_essential = None
+        request, response = await self._reanswer_on_mode_entry(
+            state, request, response, previous_mode, started, ctx
+        )
 
         reply = response.message
         # Con la negativa activa no hay datos que verificar: la barrera de
