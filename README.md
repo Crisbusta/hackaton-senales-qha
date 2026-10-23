@@ -192,6 +192,63 @@ real es todavía más largo.
 Patricia, pagando $100.000: 13 meses frente a 19 pagando solo el mínimo, con $97.662 menos de
 intereses.
 
+## Casos P0 automáticos
+
+`scripts/p0_runner.py` ejecuta los casos de `docs/casos_p0.md` contra el flujo completo. Los
+casos **se leen del documento**: si C edita una tabla, el runner la toma tal cual.
+
+```bash
+uv run python -m scripts.p0_runner --agent mock          # sin costo
+uv run python -m scripts.p0_runner                       # agente del .env (LLM real)
+uv run python -m scripts.p0_runner --case C05 --case C10 # algunos casos
+uv run python -m scripts.p0_runner --url https://api-production-0f5fb.up.railway.app
+uv run python -m scripts.p0_runner --report resultados.md
+```
+
+- Para cada paso muestra **lo que respondió Contigo junto a lo que "debe" hacer**, para que una
+  persona juzgue el tono.
+- Revisa automáticamente las reglas objetivas: cifras después de un rechazo, frases prohibidas,
+  la línea de crisis (\*4141 y 131) en C10 y los montos de C02 y C05. Termina con código 1 si
+  alguna falla.
+- Los pasos que requieren un PDF se omiten (T07 está pendiente).
+- Con `--url`, las solicitudes van firmadas con `TWILIO_AUTH_TOKEN` y cada conversación usa un
+  número ficticio distinto, así que no afecta a usuarios reales. **Cada paso llama al LLM del
+  despliegue.**
+
+## Despliegue (Docker + Railway)
+
+```bash
+docker build -t contigo .
+docker run -p 8000:8000 --env-file .env contigo
+```
+
+La imagen usa `uv sync --frozen --no-dev`, corre con un usuario sin privilegios y escucha en
+`$PORT` (Railway lo inyecta). `railway.json` define el healthcheck (`/health`) y **una sola
+réplica**: el estado de la conversación está en memoria, así que con dos réplicas cada mensaje
+podría caer en una distinta.
+
+### Variables en Railway
+
+| Variable | Valor |
+|---|---|
+| `APP_ENV` | `production` (obliga a validar la firma y apaga la traza del agente) |
+| `PUBLIC_BASE_URL` | `https://<servicio>.up.railway.app`, sin slash final |
+| `TWILIO_AUTH_TOKEN` | 🔒 Auth Token de Twilio |
+| `AGENT_IMPL` | `llm` (o `mock` para probar sin costo) |
+| `OPENAI_API_KEY` | 🔒 solo si `AGENT_IMPL=llm` |
+| `MOCK_BANK_SCENARIO` | `patricia` |
+
+Los secretos (🔒) se cargan en el panel de Railway, nunca en el repositorio.
+
+### Twilio
+
+En la configuración del sender de WhatsApp: **Webhook URL for incoming messages** =
+`https://<servicio>.up.railway.app/webhooks/whatsapp` (POST). El Status callback va vacío.
+Mientras el webhook apunte a Railway, ngrok local no recibe mensajes.
+
+**Limitaciones:** cada nuevo deploy reinicia el proceso y se pierden las conversaciones en
+memoria (en la demo, Patricia vuelve a empezar desde "Hola").
+
 ## Tests y lint
 
 ```bash
