@@ -21,3 +21,7 @@ data/
 .DS_Store
 .idea/
 .vscode/
+
+# Configuración local de herramientas (puede contener credenciales)
+.codex/
+.claude/
