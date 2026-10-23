@@ -42,10 +42,15 @@ TEXTOS_RESPALDO = {
     "E2": "Déjame ordenarlo bien antes de contártelo.",
     "E3": "Déjame ordenarlo bien antes de contártelo.",
     "E4": "Eso lo tengo que calcular con más cuidado. ¿Qué monto quieres probar?",
+    # Pendiente de validar con C (la voz es T01). Antes este respaldo
+    # ofrecia las dos opciones, y el respaldo salta sin saber en que punto
+    # de la conversacion estamos: medido el 23 oct, en C05 turno 4 ella
+    # dijo "igual lo voy a comprar" y le volvio a ofrecer esperar diez
+    # minutos. Un texto neutro nunca insiste; la oferta la hace el modelo,
+    # que si sabe si ella ya eligio.
     "PAUSA_COMPRA": (
-        "Te leo. Si quieres, podemos esperar diez minutos y ves cómo te "
-        "sientes, o te cuento cuánto le sumaría esa cuota a tu pago mínimo. "
-        "Tú eliges."
+        "Te leo, Patricia. La decisión es tuya y no voy a insistir. "
+        "Aquí estoy si quieres mirar algo."
     ),
     "APOYO": "Te leo. Acá estoy.",
     "CIERRE": "Gracias por este rato, Patricia. Aquí estoy cuando quieras volver.",

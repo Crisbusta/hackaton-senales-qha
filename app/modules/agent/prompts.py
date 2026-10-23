@@ -29,6 +29,11 @@ with open(os.path.join(_AQUI, "static_prompt.txt"), encoding="utf-8") as f:
 
 MODOS = ("E0", "E1", "E2", "E3", "E4", "PAUSA_RECHAZO", "PAUSA_COMPRA", "APOYO", "CIERRE")
 
+# Los escalones: los unicos modos donde el backend precarga datos (#12) y
+# por lo tanto los unicos donde puede existir el segundo bloque de
+# DATOS_DISPONIBLES. Fuera de aca el modelo no ve ninguna cifra.
+ESCALONES = ("E0", "E1", "E2", "E3", "E4")
+
 # La tabla de campos por modo vive en interface.py: es contrato, porque el
 # backend filtra con ella antes de llamar y el agente vuelve a filtrar aca
 # como defensa en profundidad. Estos alias existen para no tener dos tablas.
@@ -109,6 +114,41 @@ MOVIMIENTOS_RETOMA = [
     "No le pongas 'logro' ni la felicites de mas.",
 ]
 
+# PAUSA_COMPRA cuando ella ya eligio ver el efecto y dijo el monto: el
+# calculo llega resuelto en DATOS_DISPONIBLES y lo unico que falta es
+# contarlo. Sin estos movimientos el modelo volvia a ofrecer las dos
+# opciones con la cifra ya en el contexto (C05 turno 3, medido el 23 oct:
+# "$60.000 en 6 cuotas" recibio "cual de las opciones prefieres?").
+MOVIMIENTOS_CUOTA_CALCULADA = [
+    "Contarle cuanto le sumaria esa cuota a su pago minimo, con las cifras "
+    "inyectadas: la cuota mensual y el minimo nuevo.",
+    "Decir que es un calculo ilustrativo, no una oferta del banco.",
+    "NO vuelvas a ofrecer las dos opciones: ella ya eligio y ya te dio el monto.",
+    "No le digas que no compre ni la hagas sentir mal. La decision es suya.",
+]
+
+# PAUSA_COMPRA cuando ella ya eligio la opcion 2 pero todavia no dijo el
+# monto: falta preguntarlo. Sin estos movimientos el modelo volvia a
+# ofrecer las dos opciones (C05 turno 2, medido el 23 oct: "Muestrame"
+# recibio otra vez "podemos esperar diez minutos, o te cuento..."). Las
+# opciones se ofrecen una sola vez por pausa (AB1).
+MOVIMIENTOS_PEDIR_MONTO_CUOTAS = [
+    "Preguntale una sola vez el monto y en cuantas cuotas.",
+    "NO vuelvas a ofrecer las dos opciones: ella ya eligio esta.",
+    "No le digas que no compre ni la hagas sentir mal por querer comprar.",
+]
+
+# Estando en CIERRE, el modo se actualiza DESPUES de este turno, asi que
+# cuando ella vuelve el modelo todavia ve modo=CIERRE y se despide de
+# alguien que esta retomando (C01 turno 4, medido el 23 oct: "hola, ya
+# estoy mejor" recibio "que estes bien"). La etiqueta es correcta
+# (retoma_voluntaria); lo que faltaba era permitirle no despedirse.
+MOVIMIENTO_CIERRE_RETOMA = (
+    "Si en este mensaje ella retoma, dice que esta mejor o pide algo, NO te "
+    "despidas: acoge lo que dijo en una frase y dile que pueden seguir "
+    "cuando ella quiera."
+)
+
 # El cierre con la oferta lo permite AB2, una vez por escalon.
 MOVIMIENTO_OFERTA = ('Cerrar con "seguimos o lo dejamos aqui?" una sola vez.')
 MODOS_CON_OFERTA = ("E1", "E2", "E3")
@@ -152,6 +192,14 @@ def _enmascarar_montos(texto):
     return _DIGITOS.sub("...", texto or "")
 
 
+def _tiene_valor(datos, campo):
+    """Si ese campo llego con un valor usable (no ausente, no vacio)."""
+    d = (datos or {}).get(campo)
+    if not isinstance(d, dict):
+        return False
+    return d.get("valor") is not None and d.get("estado") != "ausente"
+
+
 def _formatear_valor(campo):
     valor = campo.get("valor")
     estado = campo.get("estado", "confirmado")
@@ -166,6 +214,17 @@ def _monto(valor):
     if isinstance(valor, int):
         return "$" + format(valor, ",d").replace(",", ".")
     return str(valor)
+
+
+# Claves del simulador que NO son pesos. `meses_ahorrados: 19` salia como
+# "$19" y el modelo lo repetia como dinero.
+_PREFIJOS_NO_MONTO = ("meses_",)
+
+
+def _formatear_calculo(clave, valor):
+    if clave.startswith(_PREFIJOS_NO_MONTO):
+        return f"{valor} meses"
+    return _monto(valor)
 
 
 def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
@@ -194,12 +253,34 @@ def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
     visibles = campos_visibles(modo, pregunta_previa, pidio_calculo_cuota)
     presentes = [c for c in visibles if c in (datos or {})]
     calculos = calculos_visibles(modo, motor, pidio_calculo_cuota)
-    if not presentes and not calculos:
+    # El backend precarga toda la Escalera en E0-E4 (#12). Antes se
+    # descartaba lo que no era del escalon, asi que a "cuando vence?" en E0
+    # el modelo no tenia la fecha y contestaba "la podemos ver en un
+    # momento" (C03, medido el 23 oct). Ahora va en un segundo bloque, con
+    # la condicion escrita: solo si ella lo pide en ESTE mensaje. La lista
+    # blanca del validador (#15) sigue autorizando unicamente lo que la
+    # etiqueta de este turno habilita, asi que mencionarlo sin que ella lo
+    # pida se descarta igual.
+    # Solo en los escalones. En las pausas, APOYO y CIERRE no hay segundo
+    # bloque ni aunque el backend mande datos: ahi la garantia es que el
+    # modelo no tiene ninguna cifra, y es lo que sostiene C01 y C10.
+    reservados = (
+        [c for c, v in (datos or {}).items() if c not in presentes and isinstance(v, dict)]
+        if modo in ESCALONES
+        else []
+    )
+    if not presentes and not calculos and not reservados:
         lineas.append("ninguno")
+    if presentes or calculos:
+        lineas.append("DE ESTE ESCALON")
     for campo in presentes:
         lineas.append(f"{campo}: {_formatear_valor(datos[campo])}")
     for clave, valor in calculos.items():
-        lineas.append(f"{clave}: {_monto(valor)}  (calculado)")
+        lineas.append(f"{clave}: {_formatear_calculo(clave, valor)}  (calculado)")
+    if reservados:
+        lineas += ["", "SOLO SI ELLA LO PIDE EN ESTE MENSAJE"]
+        for campo in reservados:
+            lineas.append(f"{campo}: {_formatear_valor(datos[campo])}")
 
     lineas += ["", "HISTORIAL RECIENTE (solo para entender a que se refiere;",
                "las cifras vienen enmascaradas porque nunca salen de aca)"]
@@ -214,12 +295,18 @@ def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
     if modo == "E0" and escalon_maximo in RESUMEN_POR_ESCALON:
         resumen = RESUMEN_POR_ESCALON[escalon_maximo]
         movimientos = [m.format(resumen=resumen) for m in MOVIMIENTOS_RETOMA]
+    elif modo == "PAUSA_COMPRA" and _tiene_valor(datos, "minimo_con_cuota"):
+        movimientos = list(MOVIMIENTOS_CUOTA_CALCULADA)
+    elif modo == "PAUSA_COMPRA" and pidio_calculo_cuota:
+        movimientos = list(MOVIMIENTOS_PEDIR_MONTO_CUOTAS)
     else:
         movimientos = list(MOVIMIENTOS[modo])
     if modo in MODOS_CON_OFERTA and estado.get("puedes_ofrecer_continuar"):
         movimientos.append(MOVIMIENTO_OFERTA)
     if modo == "APOYO" and "linea_crisis" not in limites:
         movimientos.append(MOVIMIENTO_LINEA)
+    if modo == "CIERRE":
+        movimientos.append(MOVIMIENTO_CIERRE_RETOMA)
     for m in movimientos:
         lineas.append(m if m.startswith("  ") else "- " + m)
 

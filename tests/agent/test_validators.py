@@ -361,56 +361,63 @@ def test_angustia_fuerte_primera_vez_sigue_usando_el_texto_completo():
 
 # --- la lista blanca con la precarga del #12 ----------------------------
 #
-# Desde el #12 el backend precarga todos los campos de la Escalera en E0-E4,
-# para que ella no espere un turno cuando pide un dato del escalon siguiente.
-# `prompts.py` los vuelve a filtrar por modo, asi que el modelo solo ve los
-# del escalon actual; la lista blanca tiene que filtrar igual. Cuando tomaba
-# `datos` completo, una cifra que el modelo nunca vio igual pasaba la capa 4.
+# Regla: se autoriza lo que el contexto le MOSTRO.
+#
+# En los escalones eso incluye el segundo bloque de DATOS_DISPONIBLES
+# ("solo si ella lo pide en este mensaje"), porque la precarga si se lo
+# muestra. Quien verifica que la respuesta corresponda al modo en que
+# termino el turno es el backend, que conoce el modo final; el agente no,
+# porque ese modo se decide con la etiqueta que el agente acaba de emitir.
+#
+# Fuera de los escalones no hay segundo bloque y no se autoriza nada. Esa
+# parte no se relajo: es la que sostiene C01 y C10.
 
 E0 = {"modo": "E0", "puedes_ofrecer_continuar": False, "limites_ya_dichos": []}
 E1 = {"modo": "E1", "puedes_ofrecer_continuar": True, "limites_ya_dichos": []}
 
 
-def test_una_cifra_precargada_de_otro_escalon_no_pasa_en_e1():
-    """En E1 el modelo solo ve el vencimiento. El saldo viene precargado pero
-    no se le muestra, asi que si aparece es una alucinacion y se descarta."""
-    r = validar(salida("Vence el 3 de noviembre y debes $1.064.000."), E1, DATOS_E2)
-
-    assert not r.ok
-    assert r.validadores["lista_blanca_numerica"] == "falla"
-
-
-def test_el_dato_del_escalon_actual_si_pasa_con_la_precarga():
-    """El otro lado de la moneda: filtrar no puede romper el turno legitimo."""
-    r = validar(salida("Vence el 3 de noviembre."), E1, DATOS_E2)
+def test_puede_contestar_una_pregunta_directa_con_un_dato_precargado():
+    """C03, medido el 23 oct: a "cuando vence?" en E0 el modelo contestaba
+    bien ("vence el 3 de noviembre de 2026") y la lista blanca lo descartaba,
+    asi que salia el texto de respaldo. El dato estaba precargado y visible."""
+    r = validar(salida("Vence el 3 de noviembre de 2026."), E0, DATOS_E2)
 
     assert r.ok, r.validadores
 
 
-def test_en_e0_ninguna_cifra_precargada_esta_autorizada():
-    r = validar(salida("Tu pago minimo es $74.350."), E0, DATOS_E2)
+def test_un_dato_precargado_de_otro_escalon_esta_autorizado_en_los_escalones():
+    r = validar(salida("Vence el 3 de noviembre y tu saldo es $1.064.000."), E1, DATOS_E2)
+
+    assert r.validadores["lista_blanca_numerica"] == "ok"
+
+
+def test_una_cifra_que_nadie_inyecto_sigue_sin_pasar():
+    """Lo que el #15 vino a cerrar y no se relaja: una cifra inventada no
+    esta en `datos`, asi que no se autoriza en ningun modo."""
+    r = validar(salida("Tu saldo es $2.500.000."), E1, DATOS_E2)
 
     assert not r.ok
     assert r.validadores["lista_blanca_numerica"] == "falla"
 
 
-def test_el_condicional_se_autoriza_con_la_etiqueta_de_este_turno():
-    """`facturado` esta precargado en E2, pero solo se autoriza si ella
-    pregunto por el en ESTE mensaje. La etiqueta es la que lo habilita."""
-    preguntando = validar(
-        salida("El monto facturado es $868.000.", etiqueta="pregunta_monto_facturado"),
-        E2_SIN_OFERTA,
-        DATOS_E2,
-    )
-    assert preguntando.ok, preguntando.validadores
+def test_en_las_pausas_y_en_apoyo_no_se_autoriza_ninguna_cifra():
+    """Ahi no hay segundo bloque: el modelo no vio nada, asi que cualquier
+    cifra es una alucinacion. Es la garantia de C01 y C10."""
+    for modo in ("PAUSA_RECHAZO", "APOYO", "CIERRE"):
+        estado = {"modo": modo, "puedes_ofrecer_continuar": False, "limites_ya_dichos": []}
+        r = validar(salida("Tu pago minimo es $74.350.", etiqueta="cuidadora_agotada"),
+                    estado, DATOS_E2)
+        assert not r.ok, modo
+        assert r.validadores["lista_blanca_numerica"] == "falla", modo
 
 
-def test_el_condicional_no_se_autoriza_si_ella_no_pregunto():
-    sin_preguntar = validar(
-        salida("El monto facturado es $868.000.", etiqueta="solicitud_informacion"),
-        E2_SIN_OFERTA,
-        DATOS_E2,
-    )
+def test_pausa_compra_solo_autoriza_lo_del_calculo():
+    """PAUSA_COMPRA no es escalon: aunque el backend mandara la Escalera
+    entera, solo se autoriza lo que ese modo admite."""
+    estado = {"modo": "PAUSA_COMPRA", "puedes_ofrecer_continuar": False,
+              "limites_ya_dichos": []}
+    r = validar(salida("Tu saldo es $1.064.000."), estado, DATOS_E2,
+                pidio_calculo_cuota=True)
 
-    assert not sin_preguntar.ok
-    assert sin_preguntar.validadores["lista_blanca_numerica"] == "falla"
+    assert not r.ok
+    assert r.validadores["lista_blanca_numerica"] == "falla"

@@ -20,6 +20,7 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from app.modules.agent.interface import fields_for_mode
+from app.modules.agent.prompts import ESCALONES
 from app.modules.agent.texts import (
     CIERRE_OFERTA,
     ETIQUETAS_TEXTO_FIJO,
@@ -86,16 +87,25 @@ def enmascarar_numeros(texto):
 def campos_autorizados(datos, modo, etiqueta, pidio_calculo_cuota=False):
     """Los campos cuyas cifras el modelo puede usar en ESTE turno.
 
-    Existe por la precarga del #12: desde entonces `datos` trae todos los
-    campos de la Escalera, no solo los del modo. El prompt los separa en dos
-    bloques, pero la lista blanca no puede seguir siendo `datos` completo,
-    porque entonces autoriza las nueve cifras en cualquier escalon: en E0 el
-    modelo no ve el saldo, y si lo alucinara la capa 4 lo dejaba pasar.
+    La regla es una sola: se autoriza lo que el contexto le MOSTRO. Es lo
+    que hace verdadero el docstring de `numeros_permitidos`, y lo que evita
+    que la capa 4 acepte una cifra que el modelo no vio.
 
-    Se autoriza lo que el modo admite, mas el condicional que habilita la
-    etiqueta de este turno: si ella pregunto por el monto facturado, el
-    facturado entra; si no, no, aunque estuviera precargado.
+    En los escalones eso incluye el segundo bloque de DATOS_DISPONIBLES
+    ("solo si ella lo pide en este mensaje"), porque ahi la precarga del #12
+    si se lo muestra. Quien verifica que la respuesta corresponda al modo en
+    que TERMINO el turno es el backend (`conversation.figures`), que conoce
+    el modo final; el agente no puede, porque el modo se decide con la
+    etiqueta que el agente acaba de producir. Medido el 23 oct: con la
+    regla anterior, a "cuando vence?" en E0 el modelo contestaba bien
+    ("vence el 3 de noviembre de 2026") y la lista blanca lo descartaba.
+
+    Fuera de los escalones no hay segundo bloque: en las pausas, APOYO y
+    CIERRE se autoriza unicamente lo que el modo admite, que es nada. Esa
+    parte no se relaja, y es la que sostiene C01 y C10.
     """
+    if modo in ESCALONES:
+        return dict(datos or {})
     permitidos = fields_for_mode(modo, etiqueta, pidio_calculo_cuota)
     return {k: v for k, v in (datos or {}).items() if k in permitidos}
 
