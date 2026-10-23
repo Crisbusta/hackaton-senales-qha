@@ -2,6 +2,36 @@
 
 Asistente financiero conversacional vía WhatsApp. Backend en FastAPI.
 
+## El problema
+
+Patricia tiene una deuda en su tarjeta y le da miedo mirarla. Las apps financieras le muestran cifras de golpe y la hacen sentir peor, así que evita abrirlas.
+
+## Qué hace Contigo
+
+Contigo es un acompañante por WhatsApp. No empuja a pagar: va al ritmo de la persona.
+
+- **Escalera:** muestra un dato a la vez (fecha, pago mínimo, saldo) y siempre ofrece parar.
+- **Respeta el "no":** si ella no quiere ver nada, no muestra cifras ni insiste.
+- **Pausa antes de comprar en cuotas:** muestra cuánto subiría su pago mínimo, sin juzgar.
+- **Apoyo ante angustia fuerte:** deja las cuentas de lado y ofrece ayuda (\*4141 y 131).
+- **Lee el PDF del estado de cuenta:** si un dato no está, lo dice en vez de inventarlo.
+
+## Qué dejamos fuera a propósito
+
+Audios, conexión bancaria real, asesoría financiera, diagnóstico emocional y recordatorios de deuda.
+
+## Pruebas manuales
+
+Los casos P0 de la demo están en [docs/casos_p0.md](docs/casos_p0.md).
+
+## Equipo
+
+- **A · Javier Barahona:** agente y modelo de lenguaje.
+- **B · Crisbusta:** WhatsApp con Twilio, lectura del PDF y simulador.
+- **C · Jairo Soto:** producto, pruebas y pitch.
+
+Todos los datos de este proyecto son ficticios.
+
 ## Requisitos
 
 - [uv](https://docs.astral.sh/uv/) (`brew install uv`). Instala Python 3.12 automáticamente.
