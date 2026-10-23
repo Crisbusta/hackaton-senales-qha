@@ -108,7 +108,15 @@ class ConversationService:
         apply_event(state, response.event, message.message_sid)
 
         reply = response.message
-        if state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False and contains_amount(reply):
+        # `protected_text` marca los textos fijos que validó C: la línea de
+        # crisis trae "*4141" y "131", que `contains_amount` lee como montos.
+        # Sin esta guarda, un mensaje de ideación suicida recibía
+        # NO_FIGURES_REPLY en vez de la línea de ayuda.
+        if (
+            not response.protected_text
+            and state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False
+            and contains_amount(reply)
+        ):
             logger.warning("Reply with figures blocked by user preference %s", ctx)
             reply = NO_FIGURES_REPLY
 

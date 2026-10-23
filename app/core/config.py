@@ -30,20 +30,17 @@ class Settings(BaseSettings):
     # Los modelos de razonamiento solo aceptan el default; el cliente omite
     # el parámetro cuando el modelo lo rechaza.
     openai_temperature: float = 0.3
-    # Medido contra el proveedor real: p50 ~5 s, máximo observado 6,4 s en
-    # una respuesta válida. Con 6 s se cortaban respuestas buenas y el turno
-    # se iba al modelo de respaldo sin necesidad; 7 s cubre la cola.
-    openai_timeout_s: float = 7.0
+    # Medido contra el proveedor real: p50 ~4,5 s, pero la cola llega a 6,8 s
+    # en respuestas perfectamente válidas, así que 7 s cortaba 2 de cada 8.
+    # Cada corte degrada el turno al texto de respaldo del modo. Conviene un
+    # timeout holgado: lo que se sacrifica es el reintento de validación, que
+    # de todos modos falla hacia ese mismo texto.
+    # Tiene que seguir cabiendo en `agent_turn_budget_s`.
+    openai_timeout_s: float = 9.0
 
-    # Presupuesto total del turno. Twilio corta el webhook a los 15 s y un
-    # turno NO alcanza para llamada + respaldo + reintento de validación:
-    # medido contra el proveedor real, el peor caso fueron 16 s.
-    # Con 13 s y un timeout de 7, el caso normal (p50 ~4,5 s) todavía deja
-    # entrar el reintento de validación, que es el que atrapa una cifra
-    # inventada; y el peor caso cierra en ~12 s, con margen.
-    # Cuando lo que queda no alcanza para otro intento se responde con el
-    # texto de respaldo del modo: determinista, validado por C, instantáneo.
-    agent_turn_budget_s: float = 13.0
+    # Margen que el agente le deja al resto del turno (validar, registrar,
+    # armar el TwiML) dentro del presupuesto de `agent_timeout_s`.
+    agent_budget_margin_s: float = 1.0
 
     # Traza del agente (una línea JSONL por turno). Guarda el mensaje
     # completo de la usuaria y la respuesta con cifras, así que viene
@@ -72,6 +69,17 @@ class Settings(BaseSettings):
         if self.is_production and self.agent_trace_enabled:
             raise ValueError("AGENT_TRACE_ENABLED cannot be enabled in production")
         return self
+
+    @property
+    def agent_turn_budget_s(self) -> float:
+        """Lo que el agente puede gastar antes de que el backend lo corte.
+
+        Deriva de `agent_timeout_s`, que es el `asyncio.wait_for` de
+        ConversationService: si fueran dos variables independientes y la del
+        backend quedara más baja, este presupuesto no se aplicaría nunca.
+        El dueño del plazo es el backend; acá solo se le resta el margen.
+        """
+        return self.agent_timeout_s - self.agent_budget_margin_s
 
     @property
     def is_production(self) -> bool:

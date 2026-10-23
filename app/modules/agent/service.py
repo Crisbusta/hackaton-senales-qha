@@ -115,7 +115,9 @@ def _backup_response(request, state, motivo, started, log_path):
         regla_aplicada=motivo,
         ruta=log_path,
     )
-    return AgentResponse(message=result.enviado, intent="UNKNOWN", event=None)
+    return AgentResponse(
+        message=result.enviado, intent="UNKNOWN", event=None, protected_text=True
+    )
 
 
 def _budget_left_for_one_more_call(started: float) -> bool:
@@ -244,6 +246,7 @@ def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None
         event=INTENT_TO_EVENT.get(intent),
         essential=(raw or {}).get("esencial"),
         mentioned_amount=(raw or {}).get("monto_mencionado"),
+        protected_text=result.override["aplicado"],
     )
 
 

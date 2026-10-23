@@ -478,7 +478,7 @@ def test_no_budget_means_no_retry(monkeypatch, log_path):
     llego a 16: si no cabe otra llamada, sale el texto de respaldo del modo,
     que es determinista y no necesita al modelo."""
     monkeypatch.setattr(
-        service, "get_settings", lambda: Settings(agent_turn_budget_s=0.0))
+        service, "get_settings", lambda: Settings(agent_timeout_s=0.0))
     fake = FakeModel([_output("Te cobran como $30.000 de interes.")])
 
     response = run_turn(

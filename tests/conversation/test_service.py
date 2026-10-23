@@ -195,3 +195,64 @@ def test_agent_failure_raises_integration_error() -> None:
 
     with pytest.raises(IntegrationError):
         run(service, "Hola", "SM1")
+
+
+# --- regresion encontrada en el recorrido end-to-end real (23 oct) ---
+
+CRISIS_TEXT = (
+    "Te leo. Dejemos las cuentas de lado por ahora, no hay apuro con eso. "
+    "¿Estás a salvo en este momento? Si quieres hablar con alguien, el *4141 "
+    "es gratis y atiende a toda hora; si sientes que estás en peligro ahora, "
+    "llama al 131."
+)
+
+
+def test_the_crisis_line_survives_the_no_figures_preference() -> None:
+    """El fallo real: `contains_amount` lee "4141" como un monto. Con la
+    preferencia de no ver cifras activa, un mensaje de ideación suicida
+    recibía NO_FIGURES_REPLY en vez de la línea de ayuda.
+    """
+    agent = SpyAgent(
+        AgentResponse(
+            message="Está bien, lo dejamos acá.",
+            intent="rechazo_pausa",
+            event=ConversationEvent.DECLINED_BALANCE_REVIEW,
+            protected_text=True,
+        ),
+        AgentResponse(
+            message=CRISIS_TEXT,
+            intent="angustia_fuerte",
+            event=ConversationEvent.CRISIS_SUPPORT_NEEDED,
+            protected_text=True,
+        ),
+    )
+    service, repo = make_service(agent)
+
+    run(service, "no quiero verlo", "SM1")
+    assert state_of(repo).preferences[PREF_SHOW_FINANCIAL_FIGURES] is False
+
+    reply = run(service, "ya no quiero vivir", "SM2")
+
+    assert reply == CRISIS_TEXT
+    assert "*4141" in reply and "131" in reply
+    assert reply != NO_FIGURES_REPLY
+    assert state_of(repo).mode is ConversationMode.SUPPORT
+
+
+def test_a_model_written_reply_with_figures_is_still_blocked() -> None:
+    """La guarda anterior no debe abrir la puerta: lo que redactó el modelo
+    sigue filtrándose."""
+    agent = SpyAgent(
+        AgentResponse(
+            message="Está bien.",
+            intent="rechazo_pausa",
+            event=ConversationEvent.DECLINED_BALANCE_REVIEW,
+            protected_text=True,
+        ),
+        AgentResponse(message="Tu saldo es $1.064.000.", intent="solicitud_informacion"),
+    )
+    service, _ = make_service(agent)
+
+    run(service, "no quiero verlo", "SM1")
+
+    assert run(service, "y mi saldo?", "SM2") == NO_FIGURES_REPLY

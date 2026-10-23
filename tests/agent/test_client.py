@@ -86,8 +86,10 @@ def test_the_client_has_a_short_timeout_and_no_internal_retries(monkeypatch):
 def test_the_fallback_is_skipped_when_it_would_not_fit(monkeypatch):
     """Llamar al respaldo cuando ya no cabe deja el turno fuera del
     presupuesto y Twilio corta antes de que llegue la respuesta."""
+    # agent_timeout_s 8 - margen 1 = presupuesto 7: justo lo que gasta el
+    # primer intento, asi que el respaldo no cabe.
     ajustes = Settings(openai_api_key="test", openai_timeout_s=7.0,
-                       agent_turn_budget_s=7.0)
+                       agent_timeout_s=8.0)
     monkeypatch.setattr(client, "get_settings", lambda: ajustes)
     usados = []
 
@@ -101,3 +103,29 @@ def test_the_fallback_is_skipped_when_it_would_not_fit(monkeypatch):
         client.call_model("sys", "ctx")
 
     assert usados == ["gpt-6.1-sol"]  # el respaldo no se intento
+
+
+def test_a_model_that_rejects_temperature_is_only_discovered_once(monkeypatch):
+    """Sin recordarlo, cada turno paga un 400 antes del 200: medido, 300-800 ms
+    de los 15 s que da Twilio, en todos los turnos de la conversacion."""
+    monkeypatch.setattr(client, "_SIN_TEMPERATURE", set())
+    vistos = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            vistos.append("temperature" in kwargs)
+            if "temperature" in kwargs:
+                raise TypeError("Unsupported parameter: 'temperature'")
+            return FakeResponse(json.dumps(
+                {"etiqueta": "cierre", "esencial": None,
+                 "monto_mencionado": None, "mensaje": "ok"}))
+
+    fake = type("C", (), {"chat": type("Ch", (), {"completions": FakeCompletions()})})()
+    monkeypatch.setattr(client, "_get_client", lambda: fake)
+
+    for _ in range(3):
+        client.call_model("sys", "ctx")
+
+    # primer turno: con temperature (falla) y sin (ok). Los dos siguientes:
+    # solo sin temperature.
+    assert vistos == [True, False, False, False]

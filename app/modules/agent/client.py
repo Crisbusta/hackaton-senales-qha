@@ -36,6 +36,11 @@ RESPONSE_SCHEMA = {
 
 _client: OpenAI | None = None
 
+# Modelos que rechazan `temperature`. Se aprende en la primera llamada y no
+# se vuelve a pagar: sin esto, cada turno gasta un 400 antes del 200, que
+# medido son 300-800 ms de los 15 s que da Twilio.
+_SIN_TEMPERATURE: set[str] = set()
+
 
 def _get_client() -> OpenAI:
     """Cliente con timeout corto y sin reintentos internos.
@@ -69,15 +74,20 @@ def _call_one(model: str, messages: list[dict], temperature: float):
                 "strict": True,
             },
         },
-        "temperature": temperature,
     }
+    if model not in _SIN_TEMPERATURE:
+        kwargs["temperature"] = temperature
+
     try:
         return _get_client().chat.completions.create(**kwargs)
     except Exception as exc:
         # Los modelos de razonamiento solo aceptan temperature=1 (el
-        # default) y rechazan el parámetro. Se reintenta sin él.
-        if "temperature" not in str(exc):
+        # default) y rechazan el parámetro. Se reintenta sin él y se anota
+        # el modelo, para que el resto de la conversación no repita el 400.
+        if "temperature" not in str(exc) or "temperature" not in kwargs:
             raise
+        logger.info("%s rechaza temperature; se omite de aqui en adelante", model)
+        _SIN_TEMPERATURE.add(model)
         kwargs.pop("temperature")
         return _get_client().chat.completions.create(**kwargs)
 
