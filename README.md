@@ -192,6 +192,29 @@ real es todavía más largo.
 Patricia, pagando $100.000: 13 meses frente a 19 pagando solo el mínimo, con $97.662 menos de
 intereses.
 
+## Casos P0 automáticos
+
+`scripts/p0_runner.py` ejecuta los casos de `docs/casos_p0.md` contra el flujo completo. Los
+casos **se leen del documento**: si C edita una tabla, el runner la toma tal cual.
+
+```bash
+uv run python -m scripts.p0_runner --agent mock          # sin costo
+uv run python -m scripts.p0_runner                       # agente del .env (LLM real)
+uv run python -m scripts.p0_runner --case C05 --case C10 # algunos casos
+uv run python -m scripts.p0_runner --url https://api-production-0f5fb.up.railway.app
+uv run python -m scripts.p0_runner --report resultados.md
+```
+
+- Para cada paso muestra **lo que respondió Contigo junto a lo que "debe" hacer**, para que una
+  persona juzgue el tono.
+- Revisa automáticamente las reglas objetivas: cifras después de un rechazo, frases prohibidas,
+  la línea de crisis (\*4141 y 131) en C10 y los montos de C02 y C05. Termina con código 1 si
+  alguna falla.
+- Los pasos que requieren un PDF se omiten (T07 está pendiente).
+- Con `--url`, las solicitudes van firmadas con `TWILIO_AUTH_TOKEN` y cada conversación usa un
+  número ficticio distinto, así que no afecta a usuarios reales. **Cada paso llama al LLM del
+  despliegue.**
+
 ## Despliegue (Docker + Railway)
 
 ```bash
