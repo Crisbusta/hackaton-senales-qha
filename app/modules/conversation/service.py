@@ -1,8 +1,9 @@
 """Coordinador del flujo conversacional.
 
-Un turno: deduplicar → recuperar estado → invocar al agente (con presupuesto
-de tiempo) → aplicar reglas deterministas sobre el evento → proteger la
-preferencia de no ver cifras → persistir → devolver la respuesta.
+Un turno: deduplicar → recuperar estado → armar `financial_data` desde el
+banco, filtrado por modo → invocar al agente (con presupuesto de tiempo) →
+aplicar reglas deterministas sobre el evento → proteger la preferencia de no
+ver cifras → persistir → devolver la respuesta.
 
 El agente interpreta y redacta; el estado (modo, preferencias) lo decide
 este servicio con reglas deterministas.
@@ -21,8 +22,12 @@ from app.modules.agent.interface import (
     ConversationEvent,
     ConversationMessage,
     ConversationMode,
+    FinancialField,
     Intent,
+    fields_for_mode,
 )
+from app.modules.banking.provider import BankDataProvider
+from app.modules.banking.service import credit_card_fields
 from app.modules.conversation import transitions
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.conversation.schemas import ConversationState, RecordedEvent, utc_now
@@ -97,9 +102,7 @@ class ConversationService:
         state.mode = transitions.siguiente_modo(
             state.mode, state.max_mode_reached, response.intent, response.event
         )
-        state.max_mode_reached = transitions.subir_maximo(
-            state.max_mode_reached, state.mode
-        )
+        state.max_mode_reached = transitions.subir_maximo(state.max_mode_reached, state.mode)
 
     @staticmethod
     def _record_anti_loop(
@@ -132,10 +135,37 @@ class ConversationService:
         agent: Agent,
         repository: ConversationRepository,
         agent_timeout_s: float,
+        bank: BankDataProvider | None = None,
     ) -> None:
         self._agent = agent
         self._repository = repository
         self._agent_timeout_s = agent_timeout_s
+        self._bank = bank
+
+    async def _financial_data(
+        self, state: ConversationState, ctx: str
+    ) -> dict[str, FinancialField]:
+        """Los datos del banco que corresponden al modo de este turno.
+
+        Inyección mínima: solo viajan los campos de `fields_for_mode()`. Si el
+        usuario pidió no ver cifras, no viaja ninguno. Si el banco falla, el
+        turno sigue sin cifras en vez de caerse.
+        """
+        if self._bank is None or state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False:
+            return {}
+        try:
+            snapshot = await self._bank.get_snapshot(state.user_id)
+        except Exception:
+            logger.warning(
+                "Bank data unavailable, continuing without figures %s", ctx, exc_info=True
+            )
+            return {}
+        if snapshot is None or not snapshot.credit_cards:
+            return {}
+
+        available = credit_card_fields(snapshot.credit_cards[0])
+        allowed = fields_for_mode(state.mode, state.last_intent)
+        return {name: available[name] for name in allowed if name in available}
 
     async def handle(self, message: IncomingMessage) -> str | None:
         """Devuelve la respuesta, o None si el mensaje ya fue procesado."""
@@ -157,10 +187,12 @@ class ConversationService:
         else:
             state.acknowledgement_answered = False
 
+        financial_data = await self._financial_data(state, ctx)
         request = AgentRequest(
             user_id=message.user_id,
             message=message.body,
             mode=state.mode,
+            financial_data=financial_data,
             recent_history=state.history[-RECENT_HISTORY_MESSAGES:],
             preferences=dict(state.preferences),
             max_mode_reached=state.max_mode_reached,
@@ -207,12 +239,13 @@ class ConversationService:
         await self._repository.save(state)
 
         logger.info(
-            "Turn processed %s turn=%d intent=%s event=%s mode=%s->%s",
+            "Turn processed %s turn=%d intent=%s event=%s mode=%s->%s financial_fields=%d",
             ctx,
             state.turn_count,
             response.intent,
             response.event,
             previous_mode,
             state.mode,
+            len(financial_data),
         )
         return reply

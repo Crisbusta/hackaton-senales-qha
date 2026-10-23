@@ -146,8 +146,15 @@ gastos esenciales) y panorama de deudas. Las cifras del escenario de Patricia co
 `docs/casos_p0.md`.
 
 Convenciones: montos en `int` (CLP), tasas en `Decimal`, banco ficticio (nunca una marca real).
-El banco solo se consulta con consentimiento explícito del usuario (pendiente de integrar
-en `ConversationService`).
+
+**Consentimiento.** Como en Open Finance, se otorga **fuera del chat**, en el portal del banco
+(`consent.granted` en el escenario). Sin un consentimiento vigente, el proveedor no entrega
+datos. Contigo nunca pide la conexión por WhatsApp.
+
+**Uso en la conversación.** En cada turno, `ConversationService` toma los datos de la tarjeta
+y envía al agente **solo los campos del modo actual** (`fields_for_mode()`). En E0, en las
+pausas y en APOYO no viaja ninguna cifra. Si el usuario pidió no ver cifras, tampoco. Si el
+banco falla, el turno continúa sin cifras.
 
 ## Tests y lint
 

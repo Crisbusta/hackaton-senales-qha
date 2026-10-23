@@ -54,3 +54,13 @@ def test_factory_uses_configured_scenario() -> None:
 @pytest.mark.parametrize("path", sorted(FIXTURES_DIR.glob("*.json")), ids=lambda p: p.stem)
 def test_every_fixture_is_valid(path: Path) -> None:
     BankSnapshot.model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_without_consent_the_bank_returns_nothing(tmp_path: Path) -> None:
+    data = json.loads((FIXTURES_DIR / "patricia.json").read_text(encoding="utf-8"))
+    data["consent"]["granted"] = False
+    (tmp_path / "revocado.json").write_text(json.dumps(data), encoding="utf-8")
+
+    provider = MockBankProvider("revocado", fixtures_dir=tmp_path)
+
+    assert asyncio.run(provider.get_snapshot("u1")) is None
