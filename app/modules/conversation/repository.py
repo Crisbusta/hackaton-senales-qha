@@ -27,6 +27,10 @@ class ConversationRepository(Protocol):
         """Marca el mensaje como procesado. False si ya lo estaba."""
         ...
 
+    async def reset(self, user_id: str) -> None:
+        """Borra el estado del usuario (la conversación vuelve a empezar)."""
+        ...
+
 
 class InMemoryConversationRepository:
     def __init__(self) -> None:
@@ -48,3 +52,7 @@ class InMemoryConversationRepository:
             return False
         self._processed_sids.add(message_sid)
         return True
+
+    async def reset(self, user_id: str) -> None:
+        # Los MessageSid procesados se conservan: un reenvío de Twilio sigue siendo duplicado.
+        self._states.pop(user_id, None)

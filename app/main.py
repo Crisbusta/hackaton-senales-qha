@@ -29,6 +29,7 @@ def create_app() -> FastAPI:
         repository=InMemoryConversationRepository(),
         agent_timeout_s=settings.agent_timeout_s,
         bank=build_bank_provider(settings),
+        demo_admins=settings.demo_admins,
     )
 
     @app.get("/health", tags=["health"])

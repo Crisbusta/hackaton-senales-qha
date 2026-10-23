@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     # Vacío: ningún usuario tiene banco vinculado.
     mock_bank_scenario: str = "patricia"
 
+    # Números (E.164, separados por coma) que pueden escribir "/reiniciar" para
+    # borrar su propia conversación. Para ensayar la demo. Vacío: desactivado.
+    demo_admin_numbers: str = ""
+
     # OpenAI (se usan cuando agent_impl="llm").
     openai_api_key: str = ""
     # gpt-6.1-sol principal y gpt-6-luna de respaldo: 15/16 aciertos cada
@@ -84,6 +88,10 @@ class Settings(BaseSettings):
         El dueño del plazo es el backend; acá solo se le resta el margen.
         """
         return self.agent_timeout_s - self.agent_budget_margin_s
+
+    @property
+    def demo_admins(self) -> frozenset[str]:
+        return frozenset(n.strip() for n in self.demo_admin_numbers.split(",") if n.strip())
 
     @property
     def is_production(self) -> bool:
