@@ -151,10 +151,18 @@ Convenciones: montos en `int` (CLP), tasas en `Decimal`, banco ficticio (nunca u
 (`consent.granted` en el escenario). Sin un consentimiento vigente, el proveedor no entrega
 datos. Contigo nunca pide la conexión por WhatsApp.
 
-**Uso en la conversación.** En cada turno, `ConversationService` toma los datos de la tarjeta
-y envía al agente **solo los campos del modo actual** (`fields_for_mode()`). En E0, en las
-pausas y en APOYO no viaja ninguna cifra. Si el usuario pidió no ver cifras, tampoco. Si el
-banco falla, el turno continúa sin cifras.
+**Uso en la conversación: precarga + verificación posterior** (`conversation/figures.py`).
+
+1. En los escalones (E0–E4), el agente recibe **todos los datos de la Escalera**, para poder
+   responder en el mismo turno lo que ella pide, sin un turno de atraso.
+2. Después de la transición, el backend verifica que la respuesta **solo traiga montos del modo
+   en que terminó el turno** (`fields_for_mode()`) o montos que ella misma escribió.
+3. Si trae una cifra de más, se reintenta una vez con solo los datos permitidos. Si no queda
+   tiempo o el reintento tampoco cumple, sale un texto sin cifras.
+
+En las pausas, APOYO y CIERRE no se precarga nada. Si el usuario pidió no ver cifras, sin
+consentimiento o si el banco falla, no viaja ninguna cifra. Una cifra sin fuente verificable
+nunca se envía.
 
 ## Tests y lint
 

@@ -10,6 +10,7 @@ from app.modules.agent.interface import (
     ConversationMode,
 )
 from app.modules.agent.mock import MockAgent
+from app.modules.banking.provider import MockBankProvider
 from app.modules.conversation.repository import InMemoryConversationRepository
 from app.modules.conversation.service import NO_FIGURES_REPLY, ConversationService
 from app.modules.whatsapp.schemas import IncomingMessage
@@ -42,9 +43,10 @@ class BrokenAgent:
         raise RuntimeError("provider exploded")
 
 
-def make_service(agent, timeout: float = 5.0):
+def make_service(agent, timeout: float = 5.0, bank=None):
     repo = InMemoryConversationRepository()
-    return ConversationService(agent=agent, repository=repo, agent_timeout_s=timeout), repo
+    service = ConversationService(agent=agent, repository=repo, agent_timeout_s=timeout, bank=bank)
+    return service, repo
 
 
 def msg(body: str, sid: str) -> IncomingMessage:
@@ -163,10 +165,11 @@ def test_figures_are_blocked_after_decline(reply: str) -> None:
     assert state_of(repo).history[-1].content == NO_FIGURES_REPLY
 
 
-def test_figures_allowed_without_decline() -> None:
+def test_unverifiable_figures_never_reach_her() -> None:
+    # Sin banco no hay de dónde verificar la cifra: no se envía (principio 5).
     service, _ = make_service(SpyAgent(AgentResponse(message="Tu pago mínimo es $74.350")))
 
-    assert run(service, "cuánto debo", "SM1") == "Tu pago mínimo es $74.350"
+    assert "74.350" not in (run(service, "cuánto debo", "SM1") or "")
 
 
 def test_mock_flow_respects_decline_end_to_end() -> None:
@@ -338,7 +341,8 @@ def test_the_request_carries_what_she_already_reached() -> None:
               ConversationEvent.ACCEPTED_NEXT_STEP),
         _resp("Qué bueno que volviste.", "retoma_voluntaria"),
     )
-    service, repo = make_service(agent)
+    # Con banco: el "$74.350" del turno 2 es una cifra verificable de E2.
+    service, repo = make_service(agent, bank=MockBankProvider("patricia"))
 
     run(service, "cuando vence?", "SM1")
     run(service, "ya, sigamos", "SM2")

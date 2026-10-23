@@ -12,6 +12,7 @@ este servicio con reglas deterministas.
 import asyncio
 import logging
 import re
+import time
 
 from app.core.logging import mask_phone
 from app.modules.agent.interface import (
@@ -24,11 +25,10 @@ from app.modules.agent.interface import (
     ConversationMode,
     FinancialField,
     Intent,
-    fields_for_mode,
 )
 from app.modules.banking.provider import BankDataProvider
 from app.modules.banking.service import credit_card_fields
-from app.modules.conversation import transitions
+from app.modules.conversation import figures, transitions
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.conversation.schemas import ConversationState, RecordedEvent, utc_now
 from app.modules.whatsapp.schemas import IncomingMessage
@@ -42,6 +42,13 @@ RECENT_HISTORY_MESSAGES = 4
 # Montos tipo "$74.350", "74.350" o "74350". Conservador a propósito: ante la
 # duda, una respuesta sin cifras es preferible a mostrar un monto no deseado.
 _AMOUNT_PATTERN = re.compile(r"\$\s*\d|\b\d{1,3}(?:\.\d{3})+\b|\b\d{4,}\b")
+
+# Si la respuesta trae cifras que no corresponden al modo y no se pudo
+# corregir a tiempo. Pendiente de validación de tono por C.
+STEP_BY_STEP_REPLY = "Vamos de a poco. ¿Quieres que lo veamos paso a paso?"
+
+# Tiempo mínimo que debe quedar del presupuesto para intentar un reintento.
+MIN_RETRY_S = 3.0
 
 NO_FIGURES_REPLY = (
     "Dejemos los números de lado por ahora, como me pediste. Aquí estoy cuando quieras retomarlo."
@@ -164,8 +171,62 @@ class ConversationService:
             return {}
 
         available = credit_card_fields(snapshot.credit_cards[0])
-        allowed = fields_for_mode(state.mode, state.last_intent)
-        return {name: available[name] for name in allowed if name in available}
+        sent = figures.fields_to_send(state.mode, state.last_intent)
+        return {name: available[name] for name in sent if name in available}
+
+    async def _call_agent(self, request: AgentRequest, timeout_s: float) -> AgentResponse:
+        try:
+            return await asyncio.wait_for(self._agent.process(request), timeout=timeout_s)
+        except TimeoutError as exc:
+            raise IntegrationError(f"Agent timed out after {timeout_s:.1f}s") from exc
+        except Exception as exc:
+            raise IntegrationError("Agent failed") from exc
+
+    async def _enforce_mode_figures(
+        self,
+        state: ConversationState,
+        request: AgentRequest,
+        response: AgentResponse,
+        started: float,
+        ctx: str,
+    ) -> str:
+        """Verificación posterior a la precarga.
+
+        La respuesta solo puede traer montos de los campos del modo en que
+        terminó el turno, o montos que ella misma escribió. Si trae otros, se
+        reintenta una vez con solo los datos permitidos; si no hay tiempo o el
+        reintento tampoco cumple, sale un texto sin cifras.
+        """
+        fields = figures.allowed_fields(state.mode, response.intent, request.previous_intent)
+        own_amounts = [request.message] + (
+            [str(response.mentioned_amount)] if response.mentioned_amount is not None else []
+        )
+        allowed = figures.allowed_amounts(request.financial_data, fields, own_amounts)
+        if not figures.unexpected_amounts(response.message, allowed):
+            return response.message
+
+        logger.warning("Reply has figures outside mode=%s, retrying %s", state.mode, ctx)
+        remaining = self._agent_timeout_s - (time.monotonic() - started)
+        if remaining >= MIN_RETRY_S:
+            retry_request = request.model_copy(
+                update={
+                    "mode": state.mode,
+                    "max_mode_reached": state.max_mode_reached,
+                    "previous_intent": response.intent,
+                    "financial_data": {
+                        k: v for k, v in request.financial_data.items() if k in fields
+                    },
+                }
+            )
+            try:
+                retry = await self._call_agent(retry_request, remaining)
+            except IntegrationError:
+                logger.warning("Retry failed, sending step-by-step reply %s", ctx, exc_info=True)
+            else:
+                if retry.protected_text or not figures.unexpected_amounts(retry.message, allowed):
+                    return retry.message
+        logger.warning("Figures outside mode not resolved, sending step-by-step reply %s", ctx)
+        return STEP_BY_STEP_REPLY
 
     async def handle(self, message: IncomingMessage) -> str | None:
         """Devuelve la respuesta, o None si el mensaje ya fue procesado."""
@@ -202,20 +263,21 @@ class ConversationService:
             already_stated_limits=list(state.stated_limits),
         )
 
-        try:
-            response = await asyncio.wait_for(
-                self._agent.process(request), timeout=self._agent_timeout_s
-            )
-        except TimeoutError as exc:
-            raise IntegrationError(f"Agent timed out after {self._agent_timeout_s}s") from exc
-        except Exception as exc:
-            raise IntegrationError("Agent failed") from exc
+        started = time.monotonic()
+        response = await self._call_agent(request, self._agent_timeout_s)
 
         previous_mode = state.mode
         apply_event(state, response.event, message.message_sid)
         self._apply_transition(state, response)
 
         reply = response.message
+        # Con la negativa activa no hay datos que verificar: la barrera de
+        # abajo reemplaza cualquier cifra.
+        if (
+            not response.protected_text
+            and state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is not False
+        ):
+            reply = await self._enforce_mode_figures(state, request, response, started, ctx)
         # `protected_text` marca los textos fijos que validó C: la línea de
         # crisis trae "*4141" y "131", que `contains_amount` lee como montos.
         # Sin esta guarda, un mensaje de ideación suicida recibía
