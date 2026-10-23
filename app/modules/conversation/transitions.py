@@ -69,6 +69,7 @@ def siguiente_modo(
     max_modo: ConversationMode,
     intent: str,
     event: ConversationEvent | None,
+    essential: bool | None = None,
 ) -> ConversationMode:
     """El modo del próximo turno. No muta nada: decide y devuelve."""
     if event is ConversationEvent.CRISIS_SUPPORT_NEEDED:
@@ -76,7 +77,11 @@ def siguiente_modo(
     if intent == Intent.DECLINED:
         return ConversationMode.PAUSE
     if intent == Intent.INSTALLMENT_INTENT:
-        return ConversationMode.INSTALLMENT_PAUSE
+        # Si la compra es esencial (remedios y similares), no se ofrece
+        # pausa ni cálculo: proponerle "esperar 10 minutos" antes de comprar
+        # un remedio es exactamente el sermón que el caso prohíbe. Se
+        # responde dentro del modo actual.
+        return modo if essential else ConversationMode.INSTALLMENT_PAUSE
     if intent == Intent.CLOSING:
         return ConversationMode.CLOSING
 
@@ -89,6 +94,15 @@ def siguiente_modo(
         # quieras verlo, me escribes". Sin esto, la pausa es una trampa.
         if intent in AVANCE:
             return _siguiente_escalon(max_modo)
+        return modo
+
+    if modo is ConversationMode.INSTALLMENT_PAUSE:
+        # "El escalón donde vive el dato que pidió": estando en PAUSA_COMPRA,
+        # el dato que ella pide es el efecto de la cuota en el mínimo, y ese
+        # vive acá (INSTALLMENT_CALC_FIELDS). Sin esta rama caía en
+        # `_siguiente_escalon`, que para un modo fuera de la Escalera devuelve
+        # E2: un "muéstrame" la mandaba a ver saldo y mínimo, que no es lo que
+        # preguntó, y perdía el hilo de la compra.
         return modo
 
     if intent in AVANCE:

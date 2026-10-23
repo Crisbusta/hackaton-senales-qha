@@ -112,3 +112,59 @@ def test_a_message_with_content_is_not_an_acknowledgement():
     for texto in ("ok, cuanto debo?", "gracias, y el saldo?", "ya no quiero vivir",
                   "ok pero no entiendo"):
         assert not t.es_acuse_vacio(texto), texto
+
+
+# --- la pausa antes de comprar en cuotas (T09) --------------------------
+
+
+def test_asking_in_the_installment_pause_stays_in_the_installment_pause():
+    """"El escalon donde vive el dato que pidio": estando en PAUSA_COMPRA, el
+    dato es el efecto de la cuota, y vive ahi. Antes caia en E2 y la mandaba
+    a ver saldo y minimo, que no es lo que pregunto."""
+    for intent in t.AVANCE:
+        assert paso(ConversationMode.INSTALLMENT_PAUSE, intent) is (
+            ConversationMode.INSTALLMENT_PAUSE
+        )
+
+
+def test_the_installment_pause_is_still_left_by_declining_or_closing():
+    assert paso(ConversationMode.INSTALLMENT_PAUSE, Intent.DECLINED) is ConversationMode.PAUSE
+    assert paso(ConversationMode.INSTALLMENT_PAUSE, Intent.CLOSING) is ConversationMode.CLOSING
+    assert paso(ConversationMode.INSTALLMENT_PAUSE, Intent.VOLUNTARY_RESUME) is (
+        ConversationMode.GREETING
+    )
+
+
+def test_a_crisis_leaves_the_installment_pause_immediately():
+    assert t.siguiente_modo(
+        ConversationMode.INSTALLMENT_PAUSE,
+        ConversationMode.GREETING,
+        Intent.WILLING_TO_EXPLORE,
+        ConversationEvent.CRISIS_SUPPORT_NEEDED,
+    ) is ConversationMode.SUPPORT
+
+
+# --- compra esencial: ni pausa ni calculo -------------------------------
+
+
+def test_an_essential_purchase_does_not_open_the_installment_pause():
+    """docs/maquina-de-estados.md, tabla de transiciones: si `essential` es
+    true, no se ofrece pausa ni calculo."""
+    assert t.siguiente_modo(
+        ConversationMode.BALANCE_OVERVIEW,
+        ConversationMode.BALANCE_OVERVIEW,
+        Intent.INSTALLMENT_INTENT,
+        None,
+        essential=True,
+    ) is ConversationMode.BALANCE_OVERVIEW
+
+
+def test_a_non_essential_purchase_still_opens_the_installment_pause():
+    for essential in (False, None):
+        assert t.siguiente_modo(
+            ConversationMode.GREETING,
+            ConversationMode.GREETING,
+            Intent.INSTALLMENT_INTENT,
+            None,
+            essential=essential,
+        ) is ConversationMode.INSTALLMENT_PAUSE

@@ -26,7 +26,22 @@ Las etiquetas están publicadas en `interface.Intent`. Los modos, en
 
 `E4` es el único escalón al que no se llega por avance: requiere que ella
 haya nombrado un monto (`mentioned_amount`), que entra como
-`monto_elegido`.
+`monto_elegido`. **La regla de entrada a `E4` todavía no está escrita**: el
+monto ya se guarda y ya viaja al contexto (T09), pero falta que C defina
+desde qué escalones y con qué condición se abre. Hasta entonces nada lleva a
+`E4`.
+
+### Estando en `PAUSA_COMPRA`
+
+Pedir un dato dentro de `PAUSA_COMPRA` **no sube la Escalera**: lo que ella
+pide ahí es el efecto de la cuota en el mínimo, y ese dato vive en el propio
+modo (`INSTALLMENT_CALC_FIELDS`). Es el caso de "el escalón donde vive el
+dato que pidió" de la tabla de arriba, y lo habilita
+`requested_installment_calculation`.
+
+Se sale de `PAUSA_COMPRA` por `rechazo_pausa`, `cierre`, `retoma_voluntaria`
+o una crisis; nunca por avanzar. Al salir, la solicitud del cálculo se apaga:
+no sobrevive al cambio de tema (C06c).
 
 **No cambian el modo** — se responden dentro del modo actual:
 `verguenza_culpa`, `cuidadora_agotada`, `tangente`, `pide_consejo`,
@@ -91,3 +106,20 @@ en otro. Eso lo garantiza el filtro `fields_for_mode()`.
 | Volver a filtrar como defensa en profundidad | el agente, con la misma función |
 | Emitir la etiqueta y redactar | el agente |
 | Calcular cualquier cifra | T10, nunca el modelo |
+
+---
+
+## 4. Estado de la integración (T09)
+
+Lo que ya corre de punta a punta: `conversation/financial.py` arma
+`financial_data` desde el banco simulado, filtrado por modo y con el
+consentimiento verificado antes de consultar. `requested_installment_calculation`,
+`chosen_amount`, `essential` y `mentioned_amount` están conectados.
+
+Lo que falta, y de quién depende:
+
+| Falta | Dueño | Efecto hoy |
+|---|---|---|
+| El simulador de cuotas | T10, B | `minimo_con_cuota` viaja `ABSENT`: el agente dice que no lo tiene en vez de inventarlo. **C05 no pasa hasta que exista.** |
+| El número de cuotas en el contrato | A + B | `AgentResponse` trae `mentioned_amount` pero no en cuántas cuotas. Sin eso, T10 no puede calcular la cuota mensual. Es un campo y hay que acordarlo. |
+| La regla de entrada a `E4` | C | Nada lleva a `E4` todavía. |

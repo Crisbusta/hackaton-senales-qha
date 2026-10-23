@@ -98,9 +98,12 @@ nunca registran el contenido del mensaje.
 
 1. **Deduplica** por `MessageSid`: un reenvío de Twilio recibe TwiML vacío.
 2. Recupera el estado del usuario (modo, preferencias, historial).
-3. Invoca al agente con un **presupuesto de tiempo** (`AGENT_TIMEOUT_S`, 12 s por defecto).
+3. **Arma las cifras del turno** (`conversation/financial.py`): pregunta al modo qué campos
+   admite (`interface.fields_for_mode`) y solo entonces consulta al banco. Ver
+   [Qué cifras ve el agente](#qué-cifras-ve-el-agente).
+4. Invoca al agente con un **presupuesto de tiempo** (`AGENT_TIMEOUT_S`, 12 s por defecto).
    Si se excede o falla, el usuario recibe un mensaje amable y el turno no se guarda.
-4. Aplica **reglas deterministas** sobre el evento del agente:
+5. Aplica **reglas deterministas** sobre el evento del agente:
 
    | Evento | Efecto |
    |---|---|
@@ -108,10 +111,37 @@ nunca registran el contenido del mensaje.
    | `REQUESTED_BALANCE` | `show_financial_figures=True` (la solicitud actual prevalece) |
    | `CRISIS_SUPPORT_NEEDED` | modo `APOYO` |
 
-   Las transiciones entre escalones E0–E4 quedan pendientes de la tabla de T01/T06.
-5. Si el usuario pidió no ver cifras y la respuesta contiene un monto, se reemplaza por un
+6. Decide el **modo del próximo turno** con la tabla de transiciones
+   (`conversation/transitions.py`, documentada en
+   [`docs/maquina-de-estados.md`](docs/maquina-de-estados.md)).
+7. Si el usuario pidió no ver cifras y la respuesta contiene un monto, se reemplaza por un
    texto neutro (última barrera, independiente del agente).
-6. Persiste historial, eventos y preferencias.
+8. Persiste historial, eventos y preferencias.
+
+### Qué cifras ve el agente
+
+El modo manda: cada escalón autoriza unos campos y nada más, con `fields_for_mode()` como
+fuente de verdad única (el backend filtra antes de llamar, el agente vuelve a filtrar como
+defensa en profundidad).
+
+| Modo | Campos en el contexto |
+|---|---|
+| `E0`, `PAUSA_RECHAZO`, `PAUSA_COMPRA`, `APOYO`, `CIERRE` | ninguno |
+| `E1` | `vencimiento` |
+| `E2` | `vencimiento`, `minimo`, `saldo` |
+| `E3` | los de `E2` + el desglose del mínimo |
+| `E4` | los de `E2` + `monto_elegido` |
+| `PAUSA_COMPRA` + cálculo pedido | `minimo`, `minimo_con_cuota` |
+
+Dos reglas que importan más que la tabla:
+
+- **Un dato que no tenemos viaja como `ABSENT`, nunca omitido.** Es lo que hace posible el
+  caso C03: el agente puede decir "esa fecha no aparece en el documento" porque recibió la
+  clave con su estado. Un diccionario vacío lo dejaría adivinando si el dato existe.
+- **Tras un rechazo el banco no se consulta.** No se trata de filtrar la respuesta después:
+  la cifra no entra al contexto, y lo que no entra no se puede filtrar.
+
+Un proveedor caído no cancela el turno: los campos salen `ABSENT` y la conversación sigue.
 
 El agente se elige con `AGENT_IMPL` (`mock` por defecto). `MockAgent` responde por
 palabras clave y nunca muestra cifras.
@@ -146,8 +176,8 @@ gastos esenciales) y panorama de deudas. Las cifras del escenario de Patricia co
 `docs/casos_p0.md`.
 
 Convenciones: montos en `int` (CLP), tasas en `Decimal`, banco ficticio (nunca una marca real).
-El banco solo se consulta con consentimiento explícito del usuario (pendiente de integrar
-en `ConversationService`).
+El banco solo se consulta con consentimiento explícito del usuario: lo verifica
+`ConversationService` antes de pedir el snapshot (T09).
 
 ## Tests y lint
 
@@ -164,10 +194,12 @@ Arquitectura feature-based: cada módulo en `app/modules/<feature>/`.
 | Módulo | Responsable | Estado |
 |---|---|---|
 | `agent/interface.py` | Backend + IA (contrato compartido) | ✅ |
-| `whatsapp/` | Backend | pendiente |
-| `conversation/` | Backend | pendiente |
+| `whatsapp/` | Backend | ✅ |
+| `conversation/` | Backend + IA | ✅ |
 | `agent/` (LLM) | IA | ✅ |
-| `statements/`, `finance/` | Backend | posterior |
+| `banking/` (simulado) | Backend | ✅ |
+| Simulador de cuotas (T10) | Backend | pendiente |
+| `statements/` (PDF, T07), `finance/` | Backend | posterior |
 
 ## Agente (IA)
 

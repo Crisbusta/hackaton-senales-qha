@@ -21,9 +21,14 @@ from app.modules.agent.interface import (
     ConversationEvent,
     ConversationMessage,
     ConversationMode,
+    FinancialField,
     Intent,
+    fields_for_mode,
 )
+from app.modules.banking.provider import BankDataProvider
+from app.modules.banking.schemas import CreditCard
 from app.modules.conversation import transitions
+from app.modules.conversation.financial import build_financial_data
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.conversation.schemas import ConversationState, RecordedEvent, utc_now
 from app.modules.whatsapp.schemas import IncomingMessage
@@ -47,8 +52,9 @@ def apply_event(state: ConversationState, event: ConversationEvent | None, sid: 
     """Reglas deterministas evento → estado.
 
     La preferencia explícita más reciente prevalece sobre las anteriores.
-    Las transiciones entre escalones E0-E4 quedan pendientes de la tabla de
-    transiciones (T01/T06); aquí solo se aplican las que el contrato fija.
+    Las transiciones entre escalones las aplica `transitions.siguiente_modo`
+    (T06); aquí solo se aplican los efectos que el contrato fija para cada
+    evento.
     """
     if event is None:
         return
@@ -95,10 +101,83 @@ class ConversationService:
     def _apply_transition(state: ConversationState, response: AgentResponse) -> None:
         """El modo del próximo turno, más AB6."""
         state.mode = transitions.siguiente_modo(
-            state.mode, state.max_mode_reached, response.intent, response.event
+            state.mode,
+            state.max_mode_reached,
+            response.intent,
+            response.event,
+            response.essential,
         )
         state.max_mode_reached = transitions.subir_maximo(
             state.max_mode_reached, state.mode
+        )
+
+    @staticmethod
+    def _record_installment_context(
+        state: ConversationState, response: AgentResponse, previous_mode: ConversationMode
+    ) -> None:
+        """Lo que hace falta para la pausa antes de comprar en cuotas.
+
+        `mentioned_amount` es el monto que ella nombró; se guarda para que
+        entre como `monto_elegido`. La solicitud del cálculo se habilita
+        cuando, ya en PAUSA_COMPRA, ella pide ver el efecto de la cuota, y
+        se apaga al salir de ese modo: no sobrevive al cambio de tema.
+        """
+        if response.mentioned_amount is not None:
+            state.chosen_amount = response.mentioned_amount
+
+        if (
+            previous_mode is ConversationMode.INSTALLMENT_PAUSE
+            and response.intent in transitions.AVANCE
+        ):
+            state.requested_installment_calculation = True
+        elif state.mode is not ConversationMode.INSTALLMENT_PAUSE:
+            state.requested_installment_calculation = False
+
+    async def _credit_card(self, user_id: str, ctx: str) -> CreditCard | None:
+        """La tarjeta del usuario, o None si no hay banco vinculado.
+
+        Un proveedor caído no cancela el turno: la conversación sigue y los
+        campos salen `ABSENT`, que es la verdad ("no tengo ese dato"). Perder
+        el turno entero por el banco sería peor, y en PAUSA_RECHAZO o APOYO
+        ni siquiera hacía falta consultarlo.
+        """
+        if self._bank_provider is None:
+            return None
+        try:
+            snapshot = await self._bank_provider.get_snapshot(user_id)
+        except Exception:
+            logger.warning("Bank provider failed, turn continues without figures %s", ctx)
+            return None
+        if snapshot is None or not snapshot.credit_cards:
+            return None
+        return snapshot.credit_cards[0]
+
+    async def _financial_data(
+        self, state: ConversationState, user_id: str, ctx: str
+    ) -> dict[str, FinancialField]:
+        """Las cifras admisibles en este turno, o nada.
+
+        Dos puertas antes de tocar al banco. La primera es el modo: si
+        `fields_for_mode` no autoriza ningún campo (E0, las pausas, APOYO,
+        CIERRE) no hay nada que pedir. La segunda es el consentimiento: si
+        ella pidió no ver cifras, no se consultan sus datos, no solo se
+        omiten de la respuesta.
+        """
+        admissible = fields_for_mode(
+            state.mode, state.last_intent, state.requested_installment_calculation
+        )
+        if not admissible:
+            return {}
+        if state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False:
+            logger.info("Figures declined by user, bank not consulted %s", ctx)
+            return {}
+
+        return build_financial_data(
+            await self._credit_card(user_id, ctx),
+            mode=state.mode,
+            previous_intent=state.last_intent,
+            requested_installment_calculation=state.requested_installment_calculation,
+            chosen_amount=state.chosen_amount,
         )
 
     @staticmethod
@@ -132,10 +211,14 @@ class ConversationService:
         agent: Agent,
         repository: ConversationRepository,
         agent_timeout_s: float,
+        bank_provider: BankDataProvider | None = None,
     ) -> None:
         self._agent = agent
         self._repository = repository
         self._agent_timeout_s = agent_timeout_s
+        # None: nadie tiene banco vinculado y el agente nunca recibe cifras.
+        # Es el default a propósito, porque es el caso seguro.
+        self._bank_provider = bank_provider
 
     async def handle(self, message: IncomingMessage) -> str | None:
         """Devuelve la respuesta, o None si el mensaje ya fue procesado."""
@@ -161,13 +244,21 @@ class ConversationService:
             user_id=message.user_id,
             message=message.body,
             mode=state.mode,
+            financial_data=await self._financial_data(state, message.user_id, ctx),
             recent_history=state.history[-RECENT_HISTORY_MESSAGES:],
             preferences=dict(state.preferences),
             max_mode_reached=state.max_mode_reached,
             previous_intent=state.last_intent,
+            requested_installment_calculation=state.requested_installment_calculation,
             can_offer_continue=self._can_offer_continue(state),
             can_clarify_route=self._can_clarify_route(state),
             already_stated_limits=list(state.stated_limits),
+            # `calculations` queda vacío: el simulador es T10 (de B) y no
+            # existe todavía. El gate del contrato (`calculations_allowed`)
+            # ya está escrito y el agente lo aplica, así que cuando T10
+            # aterrice se llena acá y nada más cambia. Mientras tanto
+            # `minimo_con_cuota` viaja ABSENT, que es la verdad: no lo
+            # tenemos. Inventarlo sería justo lo que el caso prohíbe.
         )
 
         try:
@@ -201,6 +292,7 @@ class ConversationService:
             ConversationMessage(role="assistant", content=reply),
         ]
         self._record_anti_loop(state, response, reply, previous_mode)
+        self._record_installment_context(state, response, previous_mode)
         state.last_intent = response.intent
         state.turn_count += 1
         state.updated_at = utc_now()

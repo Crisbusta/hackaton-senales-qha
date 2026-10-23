@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.modules.agent.factory import build_agent
+from app.modules.banking.provider import build_bank_provider
 from app.modules.conversation.repository import InMemoryConversationRepository
 from app.modules.conversation.service import ConversationService
 from app.modules.whatsapp.router import router as whatsapp_router
@@ -27,6 +28,7 @@ def create_app() -> FastAPI:
         agent=build_agent(settings),
         repository=InMemoryConversationRepository(),
         agent_timeout_s=settings.agent_timeout_s,
+        bank_provider=build_bank_provider(settings),
     )
 
     @app.get("/health", tags=["health"])

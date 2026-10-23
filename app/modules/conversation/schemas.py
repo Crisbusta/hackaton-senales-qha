@@ -48,4 +48,15 @@ class ConversationState(BaseModel):
     # AB8: a un "ok" o "gracias" sin contenido se responde una vez; el
     # siguiente no recibe respuesta. Se reinicia cuando ella escribe algo.
     acknowledgement_answered: bool = False
+
+    # El último monto que ella nombró (`AgentResponse.mentioned_amount`).
+    # Entra al contexto como `monto_elegido` y es la condición para E4: el
+    # único escalón al que no se llega por avance.
+    chosen_amount: int | None = None
+
+    # True cuando, estando en PAUSA_COMPRA, ella pidió ver cuánto le sumaría
+    # la cuota al mínimo. Habilita INSTALLMENT_CALC_FIELDS para el próximo
+    # turno y nada más.
+    requested_installment_calculation: bool = False
+
     updated_at: datetime = Field(default_factory=utc_now)
