@@ -104,7 +104,7 @@ nunca registran el contenido del mensaje.
 
    | Evento | Efecto |
    |---|---|
-   | `DECLINED_BALANCE_REVIEW` / `AVOID_FINANCIAL_REVIEW` | `show_financial_figures=False`, modo `PAUSA_RECHAZO` |
+   | `DECLINED_BALANCE_REVIEW` | `show_financial_figures=False`, modo `PAUSA_RECHAZO` |
    | `REQUESTED_BALANCE` | `show_financial_figures=True` (la solicitud actual prevalece) |
    | `CRISIS_SUPPORT_NEEDED` | modo `APOYO` |
 
