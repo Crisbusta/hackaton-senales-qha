@@ -113,8 +113,46 @@ Arquitectura feature-based: cada módulo en `app/modules/<feature>/`.
 | `agent/interface.py` | Backend + IA (contrato compartido) | ✅ |
 | `whatsapp/` | Backend | pendiente |
 | `conversation/` | Backend | pendiente |
-| `agent/` (LLM) | IA | pendiente |
+| `agent/` (LLM) | IA | ✅ |
 | `statements/`, `finance/` | Backend | posterior |
+
+## Agente (IA)
+
+`agent/service.py` expone `LlmAgent`, que implementa el protocolo `Agent`.
+Un turno pasa por cuatro capas antes de responder:
+
+1. **Pre-filtro** (`prefilter.py`): la ideación explícita se ataja sin
+   llamar al modelo.
+2. **Structured output** (`client.py`): etiqueta y mensaje en campos
+   separados, nunca un string que haya que parsear.
+3. **Texto fijo** (`texts.py`): en `angustia_fuerte`, `rechazo_pausa` y
+   `no_texto` la prosa del modelo se descarta.
+4. **Validadores** (`validators.py`): seis chequeos deterministas, entre
+   ellos la lista blanca numérica — toda cifra de la respuesta tiene que
+   venir de `financial_data` o de `calculations`. Si falla, un reintento;
+   si vuelve a fallar, sale el texto de respaldo del modo.
+
+Para correrlo de verdad hace falta `AGENT_IMPL=llm` y `OPENAI_API_KEY` en
+el `.env`. Los tests usan un modelo simulado: no gastan tokens ni salen a
+la red.
+
+**Presupuesto de tiempo.** Twilio corta el webhook a los 15 s. Medido
+contra el proveedor real: una llamada tarda p50 ~4,5 s y hasta 7,3 s, y el
+peor caso observado (principal + respaldo + reintento de validación) fueron
+16 s. Por eso el cliente usa `OPENAI_TIMEOUT_S=7` sin reintentos internos y
+el turno tiene un presupuesto total (`AGENT_TURN_BUDGET_S=13`): cuando lo
+que queda no alcanza para otra llamada, sale el texto de respaldo del modo
+en vez de arriesgar que Twilio corte. Si el proveedor falla del todo
+también sale ese texto: nunca una excepción.
+
+`observability.py` deja una línea JSONL por turno, para depurar y para el
+pitch. Guarda el mensaje completo y la respuesta con cifras, así que viene
+**apagada**: se enciende con `AGENT_TRACE_ENABLED=true` en local y no se
+puede encender con `APP_ENV=production`. El id de conversación se guarda
+seudonimizado, porque `user_id` es el teléfono.
+
+Las transiciones de modo y las reglas anti-bucle están en
+[`docs/maquina-de-estados.md`](docs/maquina-de-estados.md).
 
 ## Contrato backend ↔ IA
 

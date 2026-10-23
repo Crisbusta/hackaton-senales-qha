@@ -1,0 +1,7 @@
+{
+  "_nota": "Variante 3 de T07: dos pagos minimos distintos en el documento. El minimo debe quedar 'no confiable' y Contigo no elige ninguno.",
+  "variante": "conflicto",
+  "vencimiento":      {"valor": "3 de noviembre de 2026", "estado": "confirmado"},
+  "minimo":           {"valor": [74350, 47350], "estado": "no confiable"},
+  "saldo":            {"valor": 1064000, "estado": "confirmado"}
+}
