@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # Vacía: el dashboard está desactivado (responde 404).
     dashboard_password: str = ""
 
+    # PostgreSQL para el estado de las conversaciones (sobrevive a los redeploys).
+    # Vacía: en memoria, se pierde con cada reinicio. Nunca se escribe en los logs.
+    database_url: str = ""
+
     # OpenAI (se usan cuando agent_impl="llm").
     openai_api_key: str = ""
     # gpt-6.1-sol principal y gpt-6-luna de respaldo: 15/16 aciertos cada

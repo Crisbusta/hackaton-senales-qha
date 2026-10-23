@@ -1,7 +1,9 @@
 """Persistencia del estado conversacional.
 
-`ConversationRepository` es la interfaz; la implementación en memoria sirve
-para la primera vertical y se reemplazará por PostgreSQL (Supabase).
+`ConversationRepository` es la interfaz. Hay dos implementaciones y
+`build_repository()` elige según `DATABASE_URL`: vacía, en memoria (el
+default); con valor, PostgreSQL (`postgres_repository.py`), que sobrevive a
+los redeploys.
 
 Limitaciones de InMemoryConversationRepository:
 - Los datos desaparecen al reiniciar el proceso.
@@ -10,9 +12,12 @@ Limitaciones de InMemoryConversationRepository:
 - La deduplicación por MessageSid solo aplica durante la vida del proceso.
 """
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from app.modules.conversation.schemas import ConversationState
+
+if TYPE_CHECKING:
+    from app.core.config import Settings
 
 # Historial máximo guardado por usuario (mensajes, no turnos).
 MAX_HISTORY_MESSAGES = 20
@@ -67,3 +72,13 @@ class InMemoryConversationRepository:
     async def list_all(self) -> list[ConversationState]:
         states = sorted(self._states.values(), key=lambda s: s.updated_at, reverse=True)
         return [state.model_copy(deep=True) for state in states]
+
+
+def build_repository(settings: "Settings") -> ConversationRepository:
+    """Con `DATABASE_URL`, PostgreSQL (hay que llamar `open()` al arrancar); si no, en memoria."""
+    if not settings.database_url:
+        return InMemoryConversationRepository()
+    # Import diferido: el modo en memoria no carga el driver.
+    from app.modules.conversation.postgres_repository import PostgresConversationRepository
+
+    return PostgresConversationRepository(settings.database_url)
