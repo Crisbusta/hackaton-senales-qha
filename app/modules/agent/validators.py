@@ -19,6 +19,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+from app.modules.agent.interface import fields_for_mode
 from app.modules.agent.texts import (
     CIERRE_OFERTA,
     ETIQUETAS_TEXTO_FIJO,
@@ -82,8 +83,29 @@ def enmascarar_numeros(texto):
     return RE_NUMERO.sub("N", texto.replace("*4141", "N"))
 
 
+def campos_autorizados(datos, modo, etiqueta, pidio_calculo_cuota=False):
+    """Los campos cuyas cifras el modelo puede usar en ESTE turno.
+
+    Existe por la precarga del #12: desde entonces `datos` trae todos los
+    campos de la Escalera, no solo los del modo. El prompt los separa en dos
+    bloques, pero la lista blanca no puede seguir siendo `datos` completo,
+    porque entonces autoriza las nueve cifras en cualquier escalon: en E0 el
+    modelo no ve el saldo, y si lo alucinara la capa 4 lo dejaba pasar.
+
+    Se autoriza lo que el modo admite, mas el condicional que habilita la
+    etiqueta de este turno: si ella pregunto por el monto facturado, el
+    facturado entra; si no, no, aunque estuviera precargado.
+    """
+    permitidos = fields_for_mode(modo, etiqueta, pidio_calculo_cuota)
+    return {k: v for k, v in (datos or {}).items() if k in permitidos}
+
+
 def numeros_permitidos(datos, motor=None):
-    """Toda cifra visible en DATOS_DISPONIBLES mas la salida del motor T10."""
+    """Toda cifra de los campos autorizados mas la salida del motor T10.
+
+    `datos` tiene que venir ya filtrado por `campos_autorizados`: esta
+    funcion no sabe en que modo esta y autoriza todo lo que recibe.
+    """
     permitidos = set(NUMEROS_SIEMPRE_PERMITIDOS)
     for campo in (datos or {}).values():
         if not isinstance(campo, dict):
@@ -239,11 +261,17 @@ def respaldo_sin_modelo(estado, motivo):
     )
 
 
-def validar(salida, estado, datos, motor=None, intento=1):
-    """salida: el dict de cuatro campos del modelo. estado/datos: lo inyectado."""
+def validar(salida, estado, datos, motor=None, intento=1, pidio_calculo_cuota=False):
+    """salida: el dict de cuatro campos del modelo. estado/datos: lo inyectado.
+
+    `datos` puede traer campos precargados que este turno no autoriza (#12);
+    la lista blanca numerica se arma solo con los que si, segun el modo y la
+    etiqueta que el modelo acaba de emitir.
+    """
     etiqueta = salida.get("etiqueta")
     mensaje = salida.get("mensaje") or ""
     modo = estado.get("modo", "E0")
+    autorizados = campos_autorizados(datos, modo, etiqueta, pidio_calculo_cuota)
 
     # Capa 3: la prosa no se mira, se descarta.
     if etiqueta == "angustia_fuerte" and modo == "APOYO":
@@ -271,7 +299,7 @@ def validar(salida, estado, datos, motor=None, intento=1):
         )
 
     chequeos = (
-        lambda: chequeo_lista_blanca_numerica(mensaje, datos, motor),
+        lambda: chequeo_lista_blanca_numerica(mensaje, autorizados, motor),
         lambda: chequeo_frases_prohibidas(mensaje),
         lambda: chequeo_forma(mensaje),
         lambda: chequeo_movimientos(mensaje, estado),

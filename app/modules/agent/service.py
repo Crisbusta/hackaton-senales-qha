@@ -187,7 +187,10 @@ def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None
                 request, state, "sin_salida_del_modelo", started, log_path
             )
 
-    result = validators.validar(raw, state, data, calculations or None)
+    result = validators.validar(
+        raw, state, data, calculations or None,
+        pidio_calculo_cuota=request.requested_installment_calculation,
+    )
     attempts = 1
 
     if result.enviado is None:
@@ -213,7 +216,10 @@ def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None
             logger.warning(
                 "sin presupuesto para el reintento de validacion; va el texto de respaldo"
             )
-        result = validators.validar(raw, state, data, calculations or None, intento=2)
+        result = validators.validar(
+            raw, state, data, calculations or None, intento=2,
+            pidio_calculo_cuota=request.requested_installment_calculation,
+        )
 
     if triggered:
         applied_rule = "prefiltro_" + pattern

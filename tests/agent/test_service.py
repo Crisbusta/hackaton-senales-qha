@@ -285,11 +285,10 @@ def test_calculations_authorise_their_figures(log_path):
                 "monto_elegido": FinancialField(
                     value=50000, status=FieldStatus.CONFIRMED
                 ),
-                "meses_solo_minimo": FinancialField(
-                    value=49, status=FieldStatus.CONFIRMED
-                ),
             },
-            calculations={"meses_con_extra": 43},
+            # Los plazos en meses van en `calculations`, donde el contrato los
+            # pone: son salida del simulador, no campos del estado de cuenta.
+            calculations={"meses_con_extra": 43, "meses_solo_minimo": 49},
         ),
         call=fake,
         log_path=log_path,
