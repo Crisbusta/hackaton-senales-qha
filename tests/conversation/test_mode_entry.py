@@ -2,7 +2,13 @@
 
 import asyncio
 
-from app.modules.agent.interface import AgentRequest, AgentResponse, ConversationMode, Intent
+from app.modules.agent.interface import (
+    AgentRequest,
+    AgentResponse,
+    ConversationEvent,
+    ConversationMode,
+    Intent,
+)
 from app.modules.conversation.repository import InMemoryConversationRepository
 from app.modules.conversation.service import ConversationService
 from app.modules.whatsapp.schemas import IncomingMessage
@@ -104,3 +110,31 @@ def test_if_the_second_call_fails_the_first_reply_stays() -> None:
     reply, _ = turn(agent)
 
     assert reply == "primera"
+
+
+def test_resuming_from_a_pause_answers_as_a_welcome_in_the_same_turn() -> None:
+    pause_text = AgentResponse(
+        message="Está bien, lo dejamos acá.", intent=Intent.VOLUNTARY_RESUME, protected_text=True
+    )
+    agent = SpyAgent(pause_text, AgentResponse(message="Qué bueno que volviste."))
+
+    reply, state = turn(agent, mode=ConversationMode.PAUSE)
+
+    assert reply == "Qué bueno que volviste."
+    assert agent.requests[1].mode is ConversationMode.GREETING
+    assert state.mode is ConversationMode.GREETING
+
+
+def test_a_crisis_text_is_never_rewritten() -> None:
+    crisis = AgentResponse(
+        message="Llama al *4141 o al 131.",
+        intent=Intent.DISTRESS,
+        event=ConversationEvent.CRISIS_SUPPORT_NEEDED,
+        protected_text=True,
+    )
+    agent = SpyAgent(crisis)
+
+    reply, _ = turn(agent, mode=ConversationMode.PAUSE)
+
+    assert reply == "Llama al *4141 o al 131."
+    assert len(agent.requests) == 1
