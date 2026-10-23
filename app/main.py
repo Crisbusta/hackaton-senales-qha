@@ -4,6 +4,9 @@ from fastapi import FastAPI
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.modules.agent.factory import build_agent
+from app.modules.conversation.repository import InMemoryConversationRepository
+from app.modules.conversation.service import ConversationService
 from app.modules.whatsapp.router import router as whatsapp_router
 
 logger = logging.getLogger(__name__)
@@ -17,6 +20,14 @@ def create_app() -> FastAPI:
         logger.warning("Twilio signature validation is DISABLED (app_env=%s)", settings.app_env)
 
     app = FastAPI(title="Contigo API", version="0.1.0")
+
+    # Composición: aquí se eligen las implementaciones concretas. Un repositorio
+    # por instancia de app (en memoria: se pierde al reiniciar).
+    app.state.message_handler = ConversationService(
+        agent=build_agent(settings),
+        repository=InMemoryConversationRepository(),
+        agent_timeout_s=settings.agent_timeout_s,
+    )
 
     @app.get("/health", tags=["health"])
     async def health() -> dict[str, str]:

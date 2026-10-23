@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from typing import Protocol
 
+from fastapi import Request
 from pydantic import ValidationError
 from twilio.twiml.messaging_response import MessagingResponse
 
@@ -13,23 +14,15 @@ FALLBACK_REPLY = "Perdona, tuve un problema para responderte. ¿Me escribes de n
 class MessageHandler(Protocol):
     """Lo que el módulo WhatsApp necesita para obtener una respuesta.
 
-    ConversationService implementará este protocolo en la integración end-to-end.
+    Devuelve None cuando no corresponde responder (p. ej. mensaje duplicado).
     """
 
-    async def handle(self, message: IncomingMessage) -> str: ...
+    async def handle(self, message: IncomingMessage) -> str | None: ...
 
 
-class AcknowledgeHandler:
-    """Handler provisorio: confirma la recepción sin lógica conversacional."""
-
-    async def handle(self, message: IncomingMessage) -> str:
-        if message.num_media:
-            return "Recibí tu archivo 📎. Pronto podré revisarlo contigo."
-        return "Hola 👋 Recibí tu mensaje. Estoy aquí contigo."
-
-
-def get_message_handler() -> MessageHandler:
-    return AcknowledgeHandler()
+def get_message_handler(request: Request) -> MessageHandler:
+    """El handler concreto se registra en `app.state` al crear la app (main.py)."""
+    return request.app.state.message_handler
 
 
 def parse_incoming(params: Mapping[str, str]) -> IncomingMessage:
@@ -56,7 +49,9 @@ def parse_incoming(params: Mapping[str, str]) -> IncomingMessage:
         raise InvalidRequestError("Malformed Twilio webhook payload") from exc
 
 
-def to_twiml(text: str) -> str:
+def to_twiml(text: str | None) -> str:
+    """TwiML con un mensaje, o un <Response/> vacío (Twilio no envía nada)."""
     response = MessagingResponse()
-    response.message(text)
+    if text:
+        response.message(text)
     return str(response)
