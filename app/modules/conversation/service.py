@@ -30,7 +30,7 @@ from app.modules.agent.interface import (
 from app.modules.banking.provider import BankDataProvider
 from app.modules.banking.schemas import BankSnapshot
 from app.modules.banking.service import credit_card_fields
-from app.modules.conversation import figures, simulation, transitions
+from app.modules.conversation import figures, progress, simulation, transitions
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.conversation.schemas import ConversationState, RecordedEvent, utc_now
 from app.modules.whatsapp.schemas import IncomingMessage
@@ -410,6 +410,7 @@ class ConversationService:
         self._record_anti_loop(state, response, reply, previous_mode)
         state.last_intent = response.intent
         state.turn_count += 1
+        progress.record_turn(state, previous_mode, reply, request, response.intent, response.event)
         state.updated_at = utc_now()
         await self._repository.save(state)
 

@@ -19,6 +19,18 @@ class RecordedEvent(BaseModel):
     at: datetime = Field(default_factory=utc_now)
 
 
+class TimelineEntry(BaseModel):
+    """Un turno, para el dashboard de progreso. Sin el texto de los mensajes."""
+
+    at: datetime = Field(default_factory=utc_now)
+    turn: int
+    mode_from: ConversationMode
+    mode_to: ConversationMode
+    intent: str
+    event: ConversationEvent | None = None
+    milestones: list[str] = Field(default_factory=list)
+
+
 class ConversationState(BaseModel):
     """Estado conversacional de un usuario. El backend es su único dueño."""
 
@@ -55,5 +67,9 @@ class ConversationState(BaseModel):
     installment_calc_requested: bool = False
     # Si la compra en cuotas es esencial (remedios), no se ofrece pausa ni cálculo.
     installment_essential: bool | None = None
+
+    # Dashboard de progreso: avances logrados (clave → cuándo) y un turno por entrada.
+    milestones: dict[str, datetime] = Field(default_factory=dict)
+    timeline: list[TimelineEntry] = Field(default_factory=list)
 
     updated_at: datetime = Field(default_factory=utc_now)
