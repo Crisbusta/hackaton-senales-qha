@@ -14,7 +14,7 @@ Contigo es un acompañante por WhatsApp. No empuja a pagar: va al ritmo de la pe
 - **Respeta el "no":** si ella no quiere ver nada, no muestra cifras ni insiste.
 - **Pausa antes de comprar en cuotas:** muestra cuánto subiría su pago mínimo, sin juzgar.
 - **Apoyo ante angustia fuerte:** deja las cuentas de lado y ofrece ayuda (\*4141 y 131).
-- **Lee el PDF del estado de cuenta:** si un dato no está, lo dice en vez de inventarlo.
+- **Lee su estado de cuenta** (hoy desde un banco simulado; la lectura de PDF está pendiente): si un dato no está, lo dice en vez de inventarlo.
 
 ## Qué dejamos fuera a propósito
 
@@ -312,10 +312,10 @@ la red.
 **Presupuesto de tiempo.** Twilio corta el webhook a los 15 s. Medido
 contra el proveedor real: una llamada tarda p50 ~4,5 s y hasta 7,3 s, y el
 peor caso observado (principal + respaldo + reintento de validación) fueron
-16 s. Por eso el cliente usa `OPENAI_TIMEOUT_S=7` sin reintentos internos y
-el turno tiene un presupuesto total (`AGENT_TURN_BUDGET_S=13`): cuando lo
-que queda no alcanza para otra llamada, sale el texto de respaldo del modo
-en vez de arriesgar que Twilio corte. Si el proveedor falla del todo
+16 s. Por eso el cliente usa `OPENAI_TIMEOUT_S=9` sin reintentos internos y
+el turno tiene un presupuesto total derivado del backend (`AGENT_TIMEOUT_S`,
+12 s, menos 1 s de margen): cuando lo que queda no alcanza para otra llamada,
+sale el texto de respaldo del modo en vez de arriesgar que Twilio corte. Si el proveedor falla del todo
 también sale ese texto: nunca una excepción.
 
 `observability.py` deja una línea JSONL por turno, para depurar y para el
