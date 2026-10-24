@@ -187,6 +187,25 @@ En las pausas, APOYO y CIERRE no se precarga nada. Si el usuario pidió no ver c
 consentimiento o si el banco falla, no viaja ninguna cifra. Una cifra sin fuente verificable
 nunca se envía.
 
+## Estado de cuenta en PDF (T07)
+
+Patricia puede enviar el PDF de su estado de cuenta por WhatsApp:
+
+1. **Descarga** (`whatsapp/media.py`): desde la API de Twilio con `TWILIO_ACCOUNT_SID` +
+   `TWILIO_AUTH_TOKEN`. Solo se aceptan URLs de `api.twilio.com`, máximo 5 MB, todo en memoria.
+2. **Lectura** (`statements/`): `parse_statement()` obtiene los mismos campos que el banco
+   (vencimiento, mínimo, saldo, facturado, cupo, tasa y desglose del mínimo) y `validate_statement()`
+   revisa la coherencia. Nunca se extraen el nombre ni el RUT.
+3. **Respuesta** (`conversation/statement_intake.py`): un texto fijo **sin cifras**, por ejemplo
+   "Recibí tu estado de cuenta de octubre. Cuando quieras, partimos por la fecha de pago."
+   (pendiente de validación de C). Las cifras llegan después por la Escalera, cuando ella las pide.
+4. **Conciliación con el banco:** el PDF manda. Si un dato difiere del banco, se marca como
+   `UNRELIABLE` y el agente dice que aparecen dos valores. Si el PDF no trae un dato y el banco sí,
+   se usa el del banco. Sin banco, el PDF basta.
+
+Las imágenes y los audios siguen el flujo normal. Solo se reconoce la plantilla de "Banco Austral"
+(PDF con texto; sin OCR para documentos escaneados).
+
 ## Motor financiero (T10)
 
 `app/modules/finance/calculator.py` hace todos los cálculos de forma determinista, con
@@ -273,6 +292,7 @@ réplicas cada mensaje podría caer en una distinta.
 | `APP_ENV` | `production` (obliga a validar la firma y apaga la traza del agente) |
 | `PUBLIC_BASE_URL` | `https://<servicio>.up.railway.app`, sin slash final |
 | `TWILIO_AUTH_TOKEN` | 🔒 Auth Token de Twilio |
+| `TWILIO_ACCOUNT_SID` | Account SID de Twilio (empieza con `AC`), para descargar el PDF que envía el usuario |
 | `AGENT_IMPL` | `llm` (o `mock` para probar sin costo) |
 | `OPENAI_API_KEY` | 🔒 solo si `AGENT_IMPL=llm` |
 | `MOCK_BANK_SCENARIO` | `patricia` |

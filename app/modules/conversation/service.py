@@ -30,9 +30,16 @@ from app.modules.agent.interface import (
 from app.modules.banking.provider import BankDataProvider
 from app.modules.banking.schemas import BankSnapshot
 from app.modules.banking.service import credit_card_fields
-from app.modules.conversation import figures, progress, simulation, transitions
+from app.modules.conversation import (
+    figures,
+    progress,
+    simulation,
+    statement_intake,
+    transitions,
+)
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.conversation.schemas import ConversationState, RecordedEvent, utc_now
+from app.modules.whatsapp.media import MediaFetcher
 from app.modules.whatsapp.schemas import IncomingMessage
 from app.shared.exceptions import IntegrationError
 
@@ -162,12 +169,14 @@ class ConversationService:
         agent_timeout_s: float,
         bank: BankDataProvider | None = None,
         demo_admins: frozenset[str] = frozenset(),
+        media_fetcher: MediaFetcher | None = None,
     ) -> None:
         self._agent = agent
         self._repository = repository
         self._agent_timeout_s = agent_timeout_s
         self._bank = bank
         self._demo_admins = demo_admins
+        self._media_fetcher = media_fetcher
 
     async def _snapshot(self, state: ConversationState, ctx: str) -> BankSnapshot | None:
         """Datos del banco para este turno, o None si no corresponde usarlos.
@@ -191,14 +200,43 @@ class ConversationService:
         snapshot: BankSnapshot | None,
         simulated: dict[str, FinancialField],
     ) -> dict[str, FinancialField]:
-        """Los campos que viajan al agente: precarga en los escalones, filtro por modo fuera."""
-        if snapshot is None or not snapshot.credit_cards:
+        """Los campos que viajan al agente: precarga en los escalones, filtro por modo fuera.
+
+        Fuentes: el banco (con consentimiento) y el estado de cuenta en PDF que ella
+        envió, unidos por `statement_intake.merge_sources` (el PDF manda).
+        """
+        if state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False:
             return {}
-        available = credit_card_fields(snapshot.credit_cards[0]) | simulated
+        bank = (
+            credit_card_fields(snapshot.credit_cards[0])
+            if snapshot and snapshot.credit_cards
+            else {}
+        )
+        available = statement_intake.merge_sources(bank, state.statement) | simulated
+        if not available:
+            return {}
         sent = figures.fields_to_send(
             state.mode, state.last_intent, state.installment_calc_requested
         )
         return {name: available[name] for name in sent if name in available}
+
+    async def _receive_statement(
+        self, state: ConversationState, message: IncomingMessage, url: str, ctx: str
+    ) -> str:
+        assert self._media_fetcher is not None
+        result = await statement_intake.receive_statement(self._media_fetcher, url, ctx)
+        if result.statement is not None:
+            state.statement = result.statement
+        state.history += [
+            ConversationMessage(role="user", content="(envió su estado de cuenta en PDF)"),
+            ConversationMessage(role="assistant", content=result.reply),
+        ]
+        state.turn_count += 1
+        reached = [progress.SHARED_STATEMENT] if result.statement is not None else []
+        progress.record_system_turn(state, f"pdf_{result.outcome}", reached)
+        state.updated_at = utc_now()
+        await self._repository.save(state)
+        return result.reply
 
     async def _call_agent(self, request: AgentRequest, timeout_s: float) -> AgentResponse:
         try:
@@ -333,6 +371,11 @@ class ConversationService:
             return DEMO_RESET_REPLY
 
         state = await self._repository.get(message.user_id)
+
+        # T07: si envió el PDF de su estado de cuenta, se lee y se confirma sin cifras.
+        attachment = statement_intake.pdf_attachment(message)
+        if attachment is not None and self._media_fetcher is not None:
+            return await self._receive_statement(state, message, attachment.url, ctx)
 
         # AB8: a un acuse vacio se responde una vez; el siguiente no recibe
         # respuesta. Ahorra una llamada al modelo y evita el bucle de cortesia.

@@ -66,6 +66,8 @@ class Settings(BaseSettings):
 
     # Twilio (se usan desde feat/twilio-webhook).
     twilio_auth_token: str = ""
+    # Necesario para descargar adjuntos (el PDF del estado de cuenta). No es secreto.
+    twilio_account_sid: str = ""
     # URL pública exacta que Twilio llama (p. ej. https://contigo.up.railway.app).
     # Necesaria para validar X-Twilio-Signature detrás de proxies.
     public_base_url: str = ""

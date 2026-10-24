@@ -51,27 +51,31 @@ Twilio POST /webhooks/whatsapp          whatsapp/router.py, security.py
 ConversationService.handle()            conversation/service.py
   1. dedup por MessageSid → duplicado: TwiML vacío
   2. /reiniciar desde DEMO_ADMIN_NUMBERS → borra el estado y responde
-  3. AB8: un acuse vacío ("ok", "gracias") se responde una sola vez
-  4. simulation.plan_turn(): "¿y si pago 100 mil?" desde E2+ → modo E4 ANTES de llamar al agente;
+  3. PDF adjunto (application/pdf) → statement_intake: descarga desde Twilio (solo api.twilio.com,
+     ≤5 MB, en memoria) → parse_statement + validate → state.statement → texto fijo SIN cifras,
+     sin llamar al agente. Imágenes/audios siguen el flujo normal
+  4. AB8: un acuse vacío ("ok", "gracias") se responde una sola vez
+  5. simulation.plan_turn(): "¿y si pago 100 mil?" desde E2+ → modo E4 ANTES de llamar al agente;
      opción 2 en PAUSA_COMPRA → installment_calc_requested
-  5. banco (si hay consentimiento y no pidió ocultar cifras) → financial_data
+  6. banco (si hay consentimiento) + PDF guardado, unidos por merge_sources → financial_data
+     (nada si pidió ocultar cifras)
      - precarga: en E0–E4 viajan TODOS los campos de la Escalera (figures.fields_to_send)
      - calculations del motor financiero (solo si calculations_allowed)
-  6. agent.process() con asyncio.wait_for(AGENT_TIMEOUT_S)  → fallo/timeout = IntegrationError
-  7. apply_event() + transitions.siguiente_modo()  (el modo cambia DESPUÉS de responder)
-  8. _reanswer_on_mode_entry(): si el turno entró a PAUSA_COMPRA o retomó desde una pausa/APOYO/
+  7. agent.process() con asyncio.wait_for(AGENT_TIMEOUT_S)  → fallo/timeout = IntegrationError
+  8. apply_event() + transitions.siguiente_modo()  (el modo cambia DESPUÉS de responder)
+  9. _reanswer_on_mode_entry(): si el turno entró a PAUSA_COMPRA o retomó desde una pausa/APOYO/
      CIERRE hacia E0, se pide la respuesta otra vez con el modo nuevo (la clasificación es la del
      primer llamado; nunca se re-redacta un texto de crisis)
-  9. _enforce_mode_figures(): la respuesta solo puede traer montos del modo con que se llamó /
+ 10. _enforce_mode_figures(): la respuesta solo puede traer montos del modo con que se llamó /
      en que terminó, o los que ella escribió → si no, 1 reintento → si no, texto sin cifras
- 10. si pidió no ver cifras y hay un monto → NO_FIGURES_REPLY (salvo protected_text)
- 11. progress.record_turn() (avances + timeline) → repository.save()
+ 11. si pidió no ver cifras y hay un monto → NO_FIGURES_REPLY (salvo protected_text)
+ 12. progress.record_turn() (avances + timeline) → repository.save()
   → TwiML (un error del handler responde 200 con un texto amable, nunca 5xx)
 ```
 
 El "turno de atraso" (el modo cambia después de que el agente responde) es la causa raíz de
-varias decisiones: la precarga + verificación (5, 9), la detección previa de T10 (4) y el
-re-llamado al entrar a un modo (8). Si aparece un bug de "respondió como si estuviera en el modo
+varias decisiones: la precarga + verificación (6, 10), la detección previa de T10 (5) y el
+re-llamado al entrar a un modo (9). Si aparece un bug de "respondió como si estuviera en el modo
 anterior", empieza por ahí.
 
 ## Módulos y dueños
@@ -126,7 +130,8 @@ diferida), repositorio, banco y servicio en `app.state`.
 `APP_ENV`, `AGENT_IMPL` (`mock`|`llm`), `AGENT_TIMEOUT_S` (12; el presupuesto interno del agente
 es `AGENT_TIMEOUT_S − agent_budget_margin_s`; Twilio corta a ~15 s), `OPENAI_TIMEOUT_S` (9),
 `PUBLIC_BASE_URL` (solo el origen, sin path ni `/` final), `TWILIO_AUTH_TOKEN` (el **primario** de
-Twilio), `MOCK_BANK_SCENARIO`, `DEMO_ADMIN_NUMBERS`, `DASHBOARD_PASSWORD`. En Railway los valores
+Twilio), `TWILIO_ACCOUNT_SID` (para descargar el PDF), `MOCK_BANK_SCENARIO`, `DEMO_ADMIN_NUMBERS`,
+`DASHBOARD_PASSWORD`, `DATABASE_URL` (vacío = en memoria; con valor = PostgreSQL). En Railway los valores
 van sin comillas en el campo de valor.
 
 ## Tests
@@ -140,7 +145,8 @@ van sin comillas en el campo de valor.
 ## Despliegue
 
 Railway, proyecto `contigo`, servicio `api`, conectado a `main` del repo: **cada merge a `main`
-redespliega y borra las conversaciones en memoria** (no mergear durante la demo).
+redespliega**; sin `DATABASE_URL` eso borra las conversaciones en memoria (no mergear durante la
+demo). Con `DATABASE_URL = ${{Postgres.DATABASE_URL}}` sobreviven.
 `railway.json`: healthcheck `/health`, 1 réplica. Webhook de Twilio: el sender de WhatsApp
 (Messaging → Senders) → *Webhook URL for incoming messages* = `PUBLIC_BASE_URL/webhooks/whatsapp`,
 POST; *Status callback* vacío (si no, llegan como mensajes sin `Body`). Error 11200 en Twilio sin
@@ -160,11 +166,14 @@ no coinciden.
 
 ## Limitaciones conocidas (mejoras pendientes)
 
-- **Persistencia en memoria** (`InMemoryConversationRepository`): se pierde con cada deploy o
-  `/reiniciar`, no sirve con más de una réplica, y la deduplicación vive lo que vive el proceso.
-  La interfaz `ConversationRepository` (incluye `reset` y `list_all`) está lista para PostgreSQL.
-- **PDF (T07) a medias**: el parser está listo (`statements/`), pero falta descargar el adjunto desde Twilio
-  (requiere `TWILIO_ACCOUNT_SID`) e integrarlo en la conversación; los pasos con PDF del runner se omiten.
+- **Persistencia**: en memoria salvo que haya `DATABASE_URL` (`PostgresConversationRepository`:
+  sobrevive a los deploys y deduplica entre procesos). Con PostgreSQL: dos turnos simultáneos del
+  mismo usuario → gana la última escritura; `processed_messages` crece sin límite; sin migraciones
+  (el estado es un `jsonb` por usuario).
+- **PDF (T07)**: solo la plantilla de "Banco Austral" (texto, sin OCR para escaneos). Los textos de
+  recepción (`statement_intake.*_REPLY`) están pendientes de validación de C. Conciliación: el PDF
+  manda; si difiere del banco → `UNRELIABLE`; si le falta un dato y el banco lo tiene, se usa el del
+  banco. El simulador (T10) todavía usa solo el banco. Los pasos con PDF del runner se omiten.
 - **Salir de una pausa pidiendo un dato** (no con "hola") todavía responde con el texto de pausa
   en ese turno (solo la retoma hacia E0 se re-pregunta).
 - **Detección de T10 por reglas**: solo con montos explícitos ("100 mil", "$100.000", "80 lucas").
