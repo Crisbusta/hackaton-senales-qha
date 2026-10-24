@@ -171,9 +171,10 @@ no coinciden.
   mismo usuario → gana la última escritura; `processed_messages` crece sin límite; sin migraciones
   (el estado es un `jsonb` por usuario).
 - **PDF (T07)**: solo la plantilla de "Banco Austral" (texto, sin OCR para escaneos). Los textos de
-  recepción (`statement_intake.*_REPLY`) están pendientes de validación de C. Conciliación: el PDF
-  manda; si difiere del banco → `UNRELIABLE`; si le falta un dato y el banco lo tiene, se usa el del
-  banco. El simulador (T10) todavía usa solo el banco. Los pasos con PDF del runner se omiten.
+  recepción (`statement_intake.*_REPLY`) están pendientes de validación de C. Conciliación (solo
+  entre estados del **mismo período**, `period_end`): PDF más antiguo que el banco → manda el banco;
+  más nuevo → manda el PDF; mismo período → el PDF manda, si difiere del banco → `UNRELIABLE` (montos
+  como lista, textos unidos con " / "), y si le falta un dato se usa el del banco. El simulador (T10) todavía usa solo el banco. Los pasos con PDF del runner se omiten.
 - **Salir de una pausa pidiendo un dato** (no con "hola") todavía responde con el texto de pausa
   en ese turno (solo la retoma hacia E0 se re-pregunta).
 - **Detección de T10 por reglas**: solo con montos explícitos ("100 mil", "$100.000", "80 lucas").

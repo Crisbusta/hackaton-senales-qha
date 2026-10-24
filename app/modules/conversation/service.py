@@ -212,7 +212,12 @@ class ConversationService:
             if snapshot and snapshot.credit_cards
             else {}
         )
-        available = statement_intake.merge_sources(bank, state.statement) | simulated
+        bank_period = (
+            snapshot.credit_cards[0].statement.period_end
+            if snapshot and snapshot.credit_cards
+            else None
+        )
+        available = statement_intake.merge_sources(bank, state.statement, bank_period) | simulated
         if not available:
             return {}
         sent = figures.fields_to_send(
@@ -224,7 +229,15 @@ class ConversationService:
         self, state: ConversationState, message: IncomingMessage, url: str, ctx: str
     ) -> str:
         assert self._media_fetcher is not None
-        result = await statement_intake.receive_statement(self._media_fetcher, url, ctx)
+        snapshot = await self._snapshot(state, ctx)
+        bank_period = (
+            snapshot.credit_cards[0].statement.period_end
+            if snapshot and snapshot.credit_cards
+            else None
+        )
+        result = await statement_intake.receive_statement(
+            self._media_fetcher, url, ctx, bank_period
+        )
         if result.statement is not None:
             state.statement = result.statement
         state.history += [
