@@ -202,8 +202,9 @@ no coinciden.
   necesita `OPENAI_TIMEOUT_S` libres del presupuesto (`AGENT_TIMEOUT_S − AGENT_BUDGET_MARGIN_S`),
   y un timeout del principal consume justo ese tiempo. Con los valores por defecto (9 de 11 s) solo
   cubre los errores rápidos (401, 429 inmediato), nunca los lentos.
-- **Dos llamadas en serie**: medido contra el modelo real, 2–3,5 s por llamada y 5–9 s por turno.
-  Cabe en `AGENT_TIMEOUT_S`, pero el peor caso no cabe en la ventana de ~15 s de Twilio. Si pasa a
-  doler, la salida es responder por la API REST de Twilio en vez de TwiML, que elimina el techo.
-  `OPENAI_CLASSIFY_MODEL` permite probar un clasificador más rápido sin tocar código.
+- **Dos llamadas en serie**: medido de punta a punta, 5,5–9,4 s por turno con los plazos de
+  "Los plazos del turno", dentro de la ventana de Twilio. Lo que queda sin red es el peor caso
+  absoluto: si las dos se van al máximo, el turno sale con el texto de respaldo del modo. La salida
+  de fondo es responder por la API REST de Twilio en vez de TwiML, que elimina el techo de los
+  15 s; `OPENAI_CLASSIFY_MODEL` permite probar un clasificador más rápido sin tocar código.
 - `railway.json` (Config as Code) está deprecado por Railway a partir del 2026-12-01.

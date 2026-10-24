@@ -330,6 +330,10 @@ class WriteRequest(BaseModel):
     # True cuando ella eligio ver cuanto le sumaria la cuota al minimo.
     requested_installment_calculation: bool = False
 
+    # AB7: True si ya se le conto una vez que Contigo puede mirar su estado de
+    # cuenta por ella. Con esto el movimiento de E0 deja de repetirse.
+    opening_offer_made: bool = False
+
     preferences: dict[str, bool] = Field(default_factory=dict)
 
 

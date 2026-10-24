@@ -363,3 +363,75 @@ def test_the_request_carries_what_she_already_reached() -> None:
     # tras retomar vuelve a E0, pero el maximo se conserva
     assert state_of(repo).mode is ConversationMode.GREETING
     assert state_of(repo).max_mode_reached is ConversationMode.BALANCE_OVERVIEW
+
+
+# --- AB7: la oferta de mirar el estado de cuenta se hace una vez ---------
+
+
+def test_la_oferta_inicial_se_ofrece_una_sola_vez() -> None:
+    """Medido: la misma frase aparecio en 10 de 52 turnos.
+
+    El prompt decia "cuentale una sola vez" y no habia nada que lo registrara,
+    asi que la regla dependia de que el modelo se acordara. Ahora el
+    movimiento se inyecta o no, segun el estado.
+    """
+    agent = SpyAgent(
+        _resp("Hola. Puedo mirar tu estado de cuenta por ti.", Intent.GREETING_ONLY),
+        _resp("Te leo.", Intent.OFF_TOPIC),
+    )
+    service, repo = make_service(agent)
+
+    run(service, "hola", "SM1")
+    assert state_of(repo).opening_offer_made is True
+    # El primer turno la pidio; el segundo ya no.
+    assert agent.requests[0].opening_offer_made is False
+
+    run(service, "hoy mi mamá tuvo un mal día", "SM2")
+    assert agent.requests[1].opening_offer_made is True
+
+
+def test_las_opciones_numeradas_se_marcan_cuando_salen() -> None:
+    """AB8. Se marcaban al llegar al segundo fallo, antes de ofrecerlas: desde
+    el tercer mensaje confuso se le decia "no puedes aclarar" y nunca las
+    recibia."""
+    agent = SpyAgent(
+        _resp("No te entendi.", Intent.AMBIGUOUS),
+        _resp("Dime que lo complica.\n1. No saber cuanto es.\n2. El susto.",
+              Intent.AMBIGUOUS),
+    )
+    service, repo = make_service(agent)
+
+    run(service, "asdf", "SM1")
+    assert state_of(repo).recognition_failures == 1
+    assert state_of(repo).numbered_options_offered is False
+
+    run(service, "qwer", "SM2")
+    state = state_of(repo)
+    assert state.recognition_failures == 2
+    assert state.numbered_options_offered is True  # ahora si salieron
+
+
+def test_si_la_clasificacion_falla_responde_con_el_texto_del_modo() -> None:
+    """Sin etiqueta el turno no se resuelve, pero sí se responde.
+
+    Antes la excepción subía al webhook y Patricia recibía "Perdona, tuve un
+    problema para responderte": una disculpa, no una respuesta. El texto de
+    respaldo del modo lo validó C y dice algo.
+    """
+    from app.modules.agent.texts import TEXTOS_RESPALDO
+
+    class ClassifyBroken:
+        async def classify(self, request):
+            raise RuntimeError("provider down")
+
+        async def write(self, request):
+            # Llega con la etiqueta vacía: el agente real corta al respaldo.
+            assert request.classification.intent == "UNKNOWN"
+            return AgentReply(message=TEXTOS_RESPALDO["E0"], protected_text=True)
+
+    service, repo = make_service(ClassifyBroken())
+
+    reply = run(service, "hola", "SM1")
+
+    assert reply == TEXTOS_RESPALDO["E0"]
+    assert state_of(repo).turn_count == 1

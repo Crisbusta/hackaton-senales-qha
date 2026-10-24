@@ -125,9 +125,28 @@ def test_frase_prohibida_falla():
 
 # --- chequeo 3: forma --------------------------------------------------
 
-def test_cuatro_frases_falla():
+def test_cuatro_frases_se_recortan_a_tres():
+    """Si lo unico que sobra son frases, se recorta en vez de descartar.
+
+    Descartar cambiaba una respuesta buena de mas por el texto de relleno del
+    modo, que no dice nada y, en E1-E3, promete un mensaje que nunca llega.
+    """
     r = validar(salida("Hola. Te leo. Aca estoy. Y tambien aca."), E2, DATOS_E2)
-    assert r.validadores["forma"] == "falla"
+
+    assert r.validadores["forma"] == "recortado"
+    assert r.enviado == "Hola. Te leo. Aca estoy."
+    assert r.override["motivo"] == "recortado_a_tres_frases"
+
+
+def test_el_recorte_no_rescata_otras_fallas():
+    """Solo el largo. Una frase prohibida o una cifra inventada no se arreglan
+    cortando: esas van al reintento."""
+    r = validar(salida("Tranquila. Te leo. Aca estoy. Y tambien aca."), E2, DATOS_E2)
+    assert r.validadores["frases_prohibidas"] == "falla"
+
+    larga = "Debes $999. Te leo. Aca estoy. Y tambien aca."
+    r2 = validar(salida(larga), E2, DATOS_E2)
+    assert r2.validadores["lista_blanca_numerica"] == "falla"
 
 
 def test_dos_preguntas_falla():
@@ -492,3 +511,39 @@ def test_las_frases_de_verdad_siguen_contando():
     """El arreglo no puede relajar el limite para el texto normal."""
     assert contar_frases("Una. Dos. Tres. Cuatro.") == 4
     assert not chequeo_forma("Una. Dos. Tres. Cuatro.")[0]
+
+
+# --- chequeo 7: fuga de andamiaje ---------------------------------------
+
+
+def test_un_nombre_de_bloque_en_la_respuesta_falla():
+    """Patricia no tiene por que saber que existe un bloque llamado "DATOS QUE
+    PUEDES DECIR". Con el contexto resuelto hay mas encabezados en texto plano
+    que antes, asi que el riesgo de que los repita sube, no baja."""
+    for intruso in ("Segun DATOS QUE PUEDES DECIR, tu minimo es $74.350.",
+                    "Mis MOVIMIENTOS PERMITIDOS no incluyen eso.",
+                    "Eso viene en LOS DOS ULTIMOS TURNOS."):
+        r = validar(salida(intruso), E2, DATOS_E2)
+        assert not r.ok, intruso
+        assert r.validadores["fuga_de_andamiaje"] == "falla", intruso
+
+
+def test_otros_nombres_del_andamiaje_caen_antes_y_tambien_sirve():
+    """Dos nombres del contexto los atajan chequeos anteriores, y esta bien:
+
+    - `minimo_con_cuota` cae en la forma, porque el guion bajo no existe en el
+      texto plano de WhatsApp.
+    - "LO QUE TIENES QUE HACER" cae en frases prohibidas, porque contiene
+      "tienes que".
+    """
+    r = validar(salida("El campo minimo_con_cuota no esta disponible."), E2, DATOS_E2)
+    assert r.validadores["forma"] == "falla"
+
+    r2 = validar(salida("Eso no esta en LO QUE TIENES QUE HACER."), E2, DATOS_E2)
+    assert r2.validadores["frases_prohibidas"] == "falla"
+
+
+def test_una_respuesta_normal_no_dispara_el_chequeo_de_andamiaje():
+    r = validar(salida("Tu pago minimo es $74.350. Es lo que pide el banco."),
+                E2, DATOS_E2)
+    assert r.validadores["fuga_de_andamiaje"] == "ok"

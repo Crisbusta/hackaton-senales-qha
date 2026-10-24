@@ -97,9 +97,13 @@ def _calculos(request: WriteRequest) -> dict:
     )
 
 
+def _restante(started: float) -> float:
+    """Lo que queda del presupuesto del turno. Acota cada llamada."""
+    return get_settings().agent_turn_budget_s - (time.monotonic() - started)
+
+
 def _presupuesto_para_otra_llamada(started: float) -> bool:
-    settings = get_settings()
-    return settings.agent_turn_budget_s - (time.monotonic() - started) >= settings.openai_timeout_s
+    return _restante(started) >= get_settings().openai_timeout_s
 
 
 # --- paso 1: clasificar --------------------------------------------------
@@ -130,6 +134,9 @@ def clasificar(request: ClassifyRequest, call=call_model, log_path=None) -> Clas
             prompts.CLASIFICADOR, contexto,
             schema=CLASSIFY_SCHEMA,
             model=settings.openai_classify_model or None,
+            # Su reserva, no el presupuesto entero: el respaldo de este paso
+            # no puede gastar lo que necesita la redaccion.
+            restante=min(_restante(started), settings.openai_classify_timeout_s),
         )
     except IntegrationError as exc:
         # Sin clasificacion no hay turno que resolver. El backend deja el modo
@@ -197,6 +204,7 @@ def redactar(request: WriteRequest, call=call_model, log_path=None) -> AgentRepl
         clasificacion=request.classification,
         puede_ofrecer=request.can_offer_continue,
         puede_aclarar=request.can_clarify_route,
+        oferta_inicial_hecha=request.opening_offer_made,
         limites=request.already_stated_limits,
         escalon_maximo=(request.max_mode_reached or ConversationMode.GREETING).value,
         pidio_calculo_cuota=request.requested_installment_calculation,
@@ -208,7 +216,8 @@ def redactar(request: WriteRequest, call=call_model, log_path=None) -> AgentRepl
     )
 
     try:
-        crudo, metadata = call(prompts.REDACTOR, contexto, schema=WRITE_SCHEMA)
+        crudo, metadata = call(prompts.REDACTOR, contexto, schema=WRITE_SCHEMA,
+                               restante=_restante(started))
     except IntegrationError as exc:
         logger.warning("sin redaccion (%s); va el texto de respaldo", exc)
         estado = {"modo": modo, "puedes_ofrecer_continuar": request.can_offer_continue}
@@ -227,7 +236,8 @@ def redactar(request: WriteRequest, call=call_model, log_path=None) -> AgentRepl
         if _presupuesto_para_otra_llamada(started):
             try:
                 crudo, metadata = call(
-                    prompts.REDACTOR, contexto, resultado.correccion, schema=WRITE_SCHEMA
+                    prompts.REDACTOR, contexto, resultado.correccion,
+                    schema=WRITE_SCHEMA, restante=_restante(started),
                 )
                 intentos = 2
             except IntegrationError as exc:

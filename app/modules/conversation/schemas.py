@@ -63,6 +63,11 @@ class ConversationState(BaseModel):
     # AB7: un límite se dice una vez (p. ej. la línea *4141).
     stated_limits: list[str] = Field(default_factory=list)
 
+    # AB7: "puedo mirar tu estado de cuenta por ti" se dice una sola vez. No
+    # había nada que lo registrara: la regla vivía en el prompt y el modelo la
+    # cumplía a ojo, así que la misma frase salió en 10 de 52 turnos medidos.
+    opening_offer_made: bool = False
+
     # AB8: dos fallos de reconocimiento seguidos habilitan las opciones
     # numeradas, una sola vez. El contador vuelve a 0 cuando entiende.
     recognition_failures: int = 0

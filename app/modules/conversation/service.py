@@ -40,6 +40,7 @@ from app.modules.agent.interface import (
     calculations_allowed,
     fields_for_mode,
 )
+from app.modules.agent.validators import es_oferta_de_continuar
 from app.modules.banking.provider import BankDataProvider
 from app.modules.banking.schemas import BankSnapshot
 from app.modules.banking.service import credit_card_fields
@@ -64,6 +65,10 @@ RECENT_HISTORY_MESSAGES = 4
 # Montos tipo "$74.350", "74.350" o "74350". Conservador a propósito: ante la
 # duda, una respuesta sin cifras es preferible a mostrar un monto no deseado.
 _AMOUNT_PATTERN = re.compile(r"\$\s*\d|\b\d{1,3}(?:\.\d{3})+\b|\b\d{4,}\b")
+
+# Opciones numeradas en la respuesta, una por línea. AB8 las cuenta cuando
+# salen de verdad, no cuando se habilitan.
+RE_OPCIONES = re.compile(r"(?m)^\s*[123][.)]\s")
 
 # Si la respuesta trae cifras que no corresponden al modo y no se pudo
 # corregir a tiempo. Pendiente de validación de tono por C.
@@ -149,8 +154,10 @@ class ConversationService:
         previous_mode: ConversationMode,
     ) -> None:
         """Lo que hay que recordar para no repetirse en el próximo turno."""
-        # AB2: si la oferta salió, se consume en el escalón donde salió.
-        if previous_mode in transitions.MODOS_CON_OFERTA and "seguimos" in reply.lower():
+        # AB2: si la oferta salió, se consume en el escalón donde salió. El
+        # reconocimiento es el mismo que usa el validador para rechazarla: con
+        # dos patrones distintos, ampliar uno solo deja la asimetría peor.
+        if previous_mode in transitions.MODOS_CON_OFERTA and es_oferta_de_continuar(reply):
             key = previous_mode.value
             state.offers_by_mode[key] = state.offers_by_mode.get(key, 0) + 1
 
@@ -158,10 +165,18 @@ class ConversationService:
         if "*4141" in reply and transitions.LIMITE_LINEA_CRISIS not in state.stated_limits:
             state.stated_limits.append(transitions.LIMITE_LINEA_CRISIS)
 
+        # AB7: y la oferta de mirar el estado de cuenta por ella, también.
+        if "estado de cuenta" in reply.lower():
+            state.opening_offer_made = True
+
         # AB8: el contador vuelve a 0 cuando entiende.
         if classification.intent == Intent.AMBIGUOUS:
             state.recognition_failures += 1
-            if state.recognition_failures >= 2:
+            # El flag se marca cuando las opciones SALEN, no cuando se
+            # habilitan. Se marcaba al llegar al segundo fallo, antes de
+            # ofrecerlas: desde el tercer mensaje confuso se le decía "no
+            # puedes aclarar" y nunca las recibía.
+            if RE_OPCIONES.search(reply):
                 state.numbered_options_offered = True
         else:
             state.recognition_failures = 0
@@ -175,10 +190,16 @@ class ConversationService:
         bank: BankDataProvider | None = None,
         demo_admins: frozenset[str] = frozenset(),
         media_fetcher: MediaFetcher | None = None,
+        classify_timeout_s: float | None = None,
     ) -> None:
         self._agent = agent
         self._repository = repository
         self._agent_timeout_s = agent_timeout_s
+        # La reserva del paso de clasificación. Sin valor, se le da el turno
+        # completo: es lo que hacen los tests que no miden tiempos.
+        self._classify_timeout_s = (
+            classify_timeout_s if classify_timeout_s is not None else agent_timeout_s
+        )
         self._bank = bank
         self._demo_admins = demo_admins
         self._media_fetcher = media_fetcher
@@ -331,15 +352,28 @@ class ConversationService:
         # --- 1. CLASIFICAR -------------------------------------------------
         # Esta llamada no recibe ninguna cifra. El historial va enmascarado por
         # el agente antes de entrar al contexto.
-        classification = await self._classify(
-            ClassifyRequest(
-                user_id=message.user_id,
-                message=message.body,
-                mode=state.mode,
-                recent_history=state.history[-RECENT_HISTORY_MESSAGES:],
-            ),
-            self._agent_timeout_s,
-        )
+        # El plazo de este paso es su reserva, no el presupuesto del turno: lo
+        # que sobra es lo que necesita la redacción. El agente aplica la misma
+        # reserva hacia dentro (también a su modelo de respaldo); esto es el
+        # corte de afuera, para que una llamada colgada no se lleve el turno.
+        try:
+            classification = await self._classify(
+                ClassifyRequest(
+                    user_id=message.user_id,
+                    message=message.body,
+                    mode=state.mode,
+                    recent_history=state.history[-RECENT_HISTORY_MESSAGES:],
+                ),
+                min(self._classify_timeout_s, self._agent_timeout_s),
+            )
+        except IntegrationError:
+            # Sin etiqueta el turno no se puede resolver, pero sí se puede
+            # responder: el modo sigue como está y el redactor corta al texto
+            # de respaldo, que C validó. Antes esto subía al webhook y ella
+            # recibía "Perdona, tuve un problema para responderte", que no es
+            # una respuesta, es una disculpa.
+            logger.warning("Classify failed, answering with the mode text %s", ctx)
+            classification = Classification()
 
         # --- 2. DECIDIR ----------------------------------------------------
         apply_event(state, classification.event, message.message_sid)
@@ -352,11 +386,12 @@ class ConversationService:
 
         # T10: la simulación corre DESPUÉS de la transición, no antes. Antes
         # tenía que adelantarse para que el cálculo viajara en el mismo turno,
-        # y eso la convertía en una segunda forma de cambiar el modo.
-        simulation.plan_turn(state, message.body)
-        state.max_mode_reached = transitions.subir_maximo(state.max_mode_reached, state.mode)
-
+        # y eso la convertía en una segunda forma de cambiar el modo. El banco
+        # se consulta primero porque el mínimo vive ahí y "50 mil más" lo
+        # necesita para saber sobre qué suma.
         snapshot = await self._snapshot(state, ctx)
+        simulation.plan_turn(state, message.body, snapshot)
+        state.max_mode_reached = transitions.subir_maximo(state.max_mode_reached, state.mode)
         simulated, calculations = simulation.build_turn_figures(state, snapshot, message.body)
         if not calculations_allowed(state.mode, state.installment_calc_requested):
             calculations = {}
@@ -378,6 +413,7 @@ class ConversationService:
             already_stated_limits=list(state.stated_limits),
             max_mode_reached=state.max_mode_reached,
             requested_installment_calculation=state.installment_calc_requested,
+            opening_offer_made=state.opening_offer_made,
             preferences=dict(state.preferences),
         )
         # Lo que queda del presupuesto del turno, sin piso: si clasificar se lo

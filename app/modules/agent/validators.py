@@ -1,4 +1,4 @@
-"""Los seis chequeos deterministas sobre cada salida del modelo (T05).
+"""Los siete chequeos deterministas sobre cada salida del modelo (T05).
 
 No depende del SDK, de la red ni del contrato de T02: se le pasa el dict ya
 parseado. Por eso se puede probar completo antes de que exista el repo.
@@ -10,6 +10,7 @@ Orden de los chequeos, el primero que falla corta:
   4. movimientos (oferta de seguir cuando no corresponde)
   5. coherencia_etiqueta_modo
   6. sin_4141_en_cuidadora_agotada
+  7. fuga_de_andamiaje (nombres de bloque o de campo en la respuesta)
 
 Politica de fallo: un reintento nombrando el chequeo. Si el segundo intento
 tambien falla, sale el texto de respaldo del modo. En angustia_fuerte y
@@ -150,6 +151,40 @@ def contar_frases(mensaje):
     return len(partes)
 
 
+def _enmascarar_misma_longitud(texto):
+    """Como `enmascarar_numeros`, pero sin mover ninguna posicion."""
+    return RE_NUMERO.sub(lambda m: "N" * len(m.group(0)), texto)
+
+
+def recortar_a_tres_frases(mensaje):
+    """Las primeras MAX_FRASES frases, con sus opciones numeradas.
+
+    Cuando la respuesta falla SOLO por largo, descartarla entera cambia una
+    respuesta buena de mas por un texto de relleno que no dice nada ("Dejame
+    ordenarlo bien antes de contartelo"). Recortar conserva lo que ella
+    pidio. Las lineas de opcion no se cortan: no son frases y van completas.
+    """
+    lineas = mensaje.splitlines()
+    opciones = [ln for ln in lineas if RE_LINEA_OPCION.match(ln)]
+    prosa = " ".join(ln for ln in lineas if not RE_LINEA_OPCION.match(ln)).strip()
+
+    partes, resto = [], prosa
+    for _ in range(MAX_FRASES):
+        # Se enmascara preservando el largo: los puntos de miles no son fin de
+        # frase, y los indices tienen que calzar con el texto original.
+        corte = re.search(r"[.?!…]", _enmascarar_misma_longitud(resto))
+        if not corte:
+            break
+        partes.append(resto[: corte.end()].strip())
+        resto = resto[corte.end():].strip()
+    if not partes:
+        partes = [resto]
+    recortado = " ".join(p for p in partes if p).strip()
+    if opciones:
+        recortado = "\n".join([recortado, *opciones])
+    return recortado[:MAX_CARACTERES].strip()
+
+
 def chequeo_forma(mensaje):
     if len(mensaje) > MAX_CARACTERES:
         return False, f"largo {len(mensaje)} > {MAX_CARACTERES} caracteres"
@@ -172,11 +207,21 @@ def chequeo_forma(mensaje):
 MODOS_CON_OFERTA = ("E1", "E2", "E3")
 
 
+def es_oferta_de_continuar(mensaje):
+    """Si la respuesta ofrece seguir mirando.
+
+    La usan los dos lados: el validador para rechazar la oferta cuando AB2 ya
+    la consumio, y el backend para consumir el contador. Estaban separados —el
+    backend miraba `"seguimos" in reply.lower()`— y ampliar uno solo deja la
+    asimetria peor: rechaza mas formas sin consumir el contador.
+    """
+    return bool(RE_OFERTA.search(normalizar(mensaje)))
+
+
 def chequeo_movimientos(mensaje, estado):
     if estado.get("modo") not in MODOS_CON_OFERTA:
         return True, None
-    ofrece = bool(RE_OFERTA.search(normalizar(mensaje)))
-    if ofrece and not estado.get("puedes_ofrecer_continuar", False):
+    if es_oferta_de_continuar(mensaje) and not estado.get("puedes_ofrecer_continuar", False):
         return False, "ofrece seguir con la oferta ya usada en este escalon (AB2)"
     return True, None
 
@@ -200,6 +245,43 @@ def chequeo_coherencia_etiqueta_modo(mensaje, estado):
     return True, None
 
 
+# Nombres de bloque y de campo del contexto. Si aparecen en la respuesta, el
+# modelo esta repitiendo el andamiaje en vez de hablarle a Patricia.
+ANDAMIAJE = (
+    "datos que puedes decir",
+    "lo que tienes que hacer",
+    "los dos ultimos turnos",
+    "mensaje de patricia",
+    "datos_disponibles",
+    "movimientos permitidos",
+    "monto_elegido",
+    "minimo_con_cuota",
+    "minimo_intereses",
+    "minimo_cuotas",
+    "minimo_abono",
+    "meses_ahorrados",
+    "intereses_ahorrados",
+    "intereses_del_mes",
+    "faltante_para_gastos_esenciales",
+    "cuota_mensual",
+)
+
+
+def chequeo_fuga_de_andamiaje(mensaje):
+    """Que el modelo no le lea el contexto a Patricia.
+
+    Ella no tiene por que saber que existe un bloque llamado "DATOS QUE
+    PUEDES DECIR" ni un campo llamado `minimo_con_cuota`. Un nombre tecnico en
+    la respuesta es una fuga del andamiaje, y con el contexto resuelto hay mas
+    encabezados en texto plano que antes.
+    """
+    plano = normalizar(mensaje)
+    encontrados = [n for n in ANDAMIAJE if n in plano]
+    if encontrados:
+        return False, "andamiaje en la respuesta: " + ", ".join(encontrados)
+    return True, None
+
+
 def chequeo_sin_4141_en_cuidadora_agotada(mensaje, etiqueta):
     # C (23 oct): el *4141 es solo para angustia_fuerte. En el caso
     # ambiguo de cuidadora_agotada no se ofrece automatico, para que no se
@@ -220,7 +302,29 @@ NOMBRES = (
     "movimientos",
     "coherencia_etiqueta_modo",
     "sin_4141_en_cuidadora_agotada",
+    "fuga_de_andamiaje",
 )
+
+
+# El detalle de la lista blanca nombra las cifras intrusas ("cifras no
+# inyectadas: 84350"), asi que devolverselo al modelo le repite el numero que
+# no debia usar. Para ese chequeo la correccion va sin el detalle.
+_SIN_DETALLE = ("lista_blanca_numerica",)
+
+
+def _correccion(nombre, detalle):
+    """El texto del reintento, nombrando el chequeo que fallo."""
+    if nombre in _SIN_DETALLE:
+        motivo = (
+            "usaste una cifra que no esta en DATOS QUE PUEDES DECIR. Reescribela "
+            "con las cifras de ese bloque y ninguna otra"
+        )
+    else:
+        motivo = f"falla en {nombre} ({detalle})"
+    return (
+        f"Tu respuesta anterior {motivo}. Reescribela respetando LO QUE TIENES "
+        "QUE HACER."
+    )
 
 
 @dataclass
@@ -303,6 +407,7 @@ def validar(salida, estado, datos, motor=None, intento=1):
         lambda: chequeo_movimientos(mensaje, estado),
         lambda: chequeo_coherencia_etiqueta_modo(mensaje, estado),
         lambda: chequeo_sin_4141_en_cuidadora_agotada(mensaje, etiqueta),
+        lambda: chequeo_fuga_de_andamiaje(mensaje),
     )
 
     validadores = {}
@@ -315,13 +420,28 @@ def validar(salida, estado, datos, motor=None, intento=1):
         validadores[nombre] = "falla"
         for pendiente in NOMBRES[len(validadores):]:
             validadores[pendiente] = "no_evaluado"
+
+        # Si lo unico que sobra son frases, las primeras tres suelen ser una
+        # respuesta valida: recortarlas conserva lo que ella pidio, y el texto
+        # de respaldo no dice nada. Se re-valida el recorte, porque recortar no
+        # puede introducir otra falla.
+        if nombre == "forma" and "frases >" in (detalle or ""):
+            recorte = recortar_a_tres_frases(mensaje)
+            ok_recorte, _ = chequeo_forma(recorte)
+            if ok_recorte and chequeo_frases_prohibidas(recorte)[0]:
+                validadores[nombre] = "recortado"
+                return Resultado(
+                    enviado=recorte,
+                    validadores=validadores,
+                    override={"aplicado": False, "motivo": "recortado_a_tres_frases"},
+                )
+
         if intento == 1:
             return Resultado(
                 enviado=None,
                 validadores=validadores,
                 override={"aplicado": False, "motivo": None},
-                correccion=f"Tu respuesta anterior falla en {nombre} ({detalle}). Reescribela "
-                "respetando los MOVIMIENTOS PERMITIDOS.",
+                correccion=_correccion(nombre, detalle),
             )
         return Resultado(
             enviado=_respaldo(modo, estado),

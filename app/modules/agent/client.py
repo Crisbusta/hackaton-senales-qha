@@ -73,7 +73,37 @@ def _get_client() -> OpenAI:
     return _client
 
 
-def _call_one(model: str, messages: list[dict], temperature: float, schema=None):
+# Lo minimo que vale la pena darle al modelo de respaldo. Por debajo de esto
+# el turno se corta igual y la llamada solo gasta.
+MIN_RESPALDO_S = 2.5
+
+# El modelo de respaldo solo entra en la CLASIFICACION.
+#
+# Medido contra el proveedor real: en la redaccion, el principal se cortaba a
+# los 7 s y el respaldo llevaba el turno a 9,7 s. Duplica el costo del paso mas
+# caro justo cuando ya no queda tiempo, y el resultado igual llega tarde. Si la
+# redaccion no alcanza, el texto de respaldo del modo sale al instante y es un
+# texto que C valido.
+#
+# En la clasificacion si vale: es la llamada corta y sin etiqueta no hay turno
+# que resolver.
+RESPALDO_SOLO_EN_CLASIFICACION = True
+
+
+def plazo(limite: float, restante: float | None) -> float:
+    """El plazo real de una llamada: su limite, o lo que queda del turno.
+
+    Las dos cosas tienen que acotarla. El limite evita que una llamada lenta
+    se coma el turno; lo que queda evita que la suma de las dos se pase de la
+    ventana de Twilio aunque cada una respete su limite.
+    """
+    if restante is None:
+        return limite
+    return max(min(limite, restante), 0.0)
+
+
+def _call_one(model: str, messages: list[dict], temperature: float, schema=None,
+              timeout: float | None = None):
     nombre = "contigo_classify" if schema is CLASSIFY_SCHEMA else "contigo_write"
     kwargs = {
         "model": model,
@@ -90,6 +120,9 @@ def _call_one(model: str, messages: list[dict], temperature: float, schema=None)
     if model not in _SIN_TEMPERATURE:
         kwargs["temperature"] = temperature
 
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+
     try:
         return _get_client().chat.completions.create(**kwargs)
     except Exception as exc:
@@ -105,7 +138,7 @@ def _call_one(model: str, messages: list[dict], temperature: float, schema=None)
 
 
 def call_model(static_prompt: str, context: str, correction: str | None = None,
-               schema=None, model: str | None = None):
+               schema=None, model: str | None = None, restante: float | None = None):
     """-> (dict con los campos del esquema, metadata del turno).
 
     `schema` decide el paso: CLASSIFY_SCHEMA o WRITE_SCHEMA. `model` permite
@@ -126,23 +159,42 @@ def call_model(static_prompt: str, context: str, correction: str | None = None,
         messages.append({"role": "user", "content": correction})
 
     started = time.monotonic()
+    es_clasificacion = schema is CLASSIFY_SCHEMA
+    limite = (
+        settings.openai_classify_timeout_s if es_clasificacion
+        else settings.openai_timeout_s
+    )
     model = model or settings.openai_model
     try:
-        response = _call_one(model, messages, settings.openai_temperature, schema)
+        response = _call_one(
+            model, messages, settings.openai_temperature, schema,
+            timeout=plazo(limite, restante),
+        )
     except OpenAIError as exc:
-        restante = settings.agent_turn_budget_s - (time.monotonic() - started)
-        if restante < settings.openai_timeout_s:
-            # Intentar el respaldo dejaria el turno fuera del presupuesto y
-            # Twilio cortaria antes de que llegue. Mejor fallar ahora: el
-            # turno responde con su texto de respaldo, que no necesita al
-            # modelo.
+        if not es_clasificacion:
+            # La redaccion no tiene segundo modelo: ver
+            # RESPALDO_SOLO_EN_CLASIFICACION. Sale el texto de respaldo del modo.
+            raise IntegrationError(f"write failed with {model}") from exc
+        # El respaldo corre con lo que QUEDA del presupuesto, no con el timeout
+        # completo. Pedirle los `openai_timeout_s` enteros lo volvia
+        # inalcanzable justo en el caso mas comun: si el principal se cae por
+        # timeout consume esos mismos segundos, asi que nunca sobraban. Medido:
+        # con 9 de 11 s, el principal tenia que fallar en menos de 2 s, y su
+        # propio timeout es de 9. Solo cubria los errores rapidos (401, 429).
+        libre = settings.agent_turn_budget_s - (time.monotonic() - started)
+        if restante is not None:
+            libre = min(libre, restante - (time.monotonic() - started))
+        if libre < MIN_RESPALDO_S:
             raise IntegrationError(
                 f"no budget left for the fallback model after {model}"
             ) from exc
-        logger.warning("modelo principal %s fallo (%s); usando respaldo", model, exc)
+        logger.warning("modelo principal %s fallo (%s); usando respaldo con %.1fs",
+                       model, exc, libre)
         model = settings.openai_fallback_model
         try:
-            response = _call_one(model, messages, settings.openai_temperature, schema)
+            response = _call_one(
+                model, messages, settings.openai_temperature, schema, timeout=libre
+            )
         except OpenAIError as fallback_exc:
             # Los dos modelos fallaron: es un fallo de integración, no un
             # error interno. El webhook ya responde con su texto de

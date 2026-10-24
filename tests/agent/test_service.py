@@ -11,7 +11,6 @@ import pathlib
 
 import pytest
 
-from app.core.config import Settings
 from app.modules.agent import observability as obs
 from app.modules.agent import service
 from app.modules.agent.interface import (
@@ -73,11 +72,13 @@ class FakeModel:
         self.last_context = None
         self.last_correction = None
 
-    def __call__(self, static_prompt, context, correction=None, schema=None, model=None):
+    def __call__(self, static_prompt, context, correction=None, schema=None,
+                 model=None, restante=None):
         self.calls += 1
         self.last_context = context
         self.last_correction = correction
         self.last_schema = schema
+        self.last_restante = restante
         output = self.responses.pop(0)
         metadata = {
             "nombre": "fake",
@@ -154,7 +155,12 @@ def test_invented_figure_is_fixed_on_retry(log_path):
     )
 
     assert fake.calls == 2
-    assert "lista_blanca_numerica" in fake.last_correction
+    # La correccion NO le repite la cifra que alucino: el detalle del chequeo
+    # dice "cifras no inyectadas: 30000", y devolverselo es ponerle el numero
+    # prohibido otra vez delante.
+    assert "30.000" not in fake.last_correction
+    assert "30000" not in fake.last_correction
+    assert "DATOS QUE PUEDES DECIR" in fake.last_correction
     assert "74.350" in response.message
     assert "30.000" not in response.message
 
@@ -529,8 +535,11 @@ def test_no_budget_means_no_retry(monkeypatch, log_path):
     """Twilio corta a los 15 s. Medido, un turno con respaldo y reintento
     llego a 16: si no cabe otra llamada, sale el texto de respaldo del modo,
     que es determinista y no necesita al modelo."""
-    monkeypatch.setattr(
-        service, "get_settings", lambda: Settings(agent_timeout_s=0.0))
+    # Una configuracion sin presupuesto ya no existe: `Settings` la rechaza al
+    # arrancar. Lo que sigue siendo real es que la primera llamada se alargue y
+    # no quede tiempo para otra, asi que eso es lo que se simula, con el reloj.
+    reloj = iter([0.0, 100.0, 100.0, 100.0, 100.0])
+    monkeypatch.setattr(service.time, "monotonic", lambda: next(reloj))
     fake = FakeModel([_output("Te cobran como $30.000 de interes.")])
 
     response = redactar(

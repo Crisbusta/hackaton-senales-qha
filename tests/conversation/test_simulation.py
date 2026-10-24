@@ -207,3 +207,25 @@ def test_leaving_the_installment_pause_resets_the_request() -> None:
     chat.send("mejor no, sigamos con lo otro")
 
     assert chat.state.installment_calc_requested is False
+
+
+# --- "50 mil mas" se suma al minimo (B6) --------------------------------
+
+
+def test_un_monto_sobre_el_minimo_se_suma_no_reemplaza():
+    """Medido: `payment_amount("¿y si pago 50 mil más?")` devolvia 50.000 y se
+    simulaba como el pago total. Con el minimo en $74.350, pagar $50.000 da
+    meses "ahorrados" negativos y un mensaje que se contradice."""
+    assert payment_amount("y si pago 50 mil mas que el minimo?", 74350) == 124350
+    assert payment_amount("y si abono 50 mil extra?", 74350) == 124350
+    assert payment_amount("y si pago 20 mil adicionales?", 74350) == 94350
+
+
+def test_un_monto_a_secas_sigue_siendo_el_total():
+    assert payment_amount("y si pago 100 mil?", 74350) == 100000
+    assert payment_amount("y si pago 100 mil?") == 100000
+
+
+def test_sin_el_minimo_no_se_puede_sumar_y_se_toma_tal_cual():
+    """Sin banco no hay minimo: se devuelve lo que ella dijo, no se inventa."""
+    assert payment_amount("y si pago 50 mil mas?") == 50000

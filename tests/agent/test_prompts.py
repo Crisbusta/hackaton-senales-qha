@@ -480,3 +480,41 @@ def test_la_salida_de_las_opciones_usa_las_palabras_que_el_codigo_reconoce():
     assert "lo dejamos aqu" in MOVIMIENTO_OFERTA
     assert "o lo dejamos aqu" in MOVIMIENTO_ACLARAR
     assert "dejarlo hasta aqui" not in plano(REDACTOR + MOVIMIENTO_OFERTA)
+
+
+# --- cobertura: ningun par (modo, etiqueta) se queda sin movimientos -----
+
+
+def test_todo_par_modo_etiqueta_tiene_movimientos_resueltos():
+    """El antidoto a los dos fallos P0 del modelo real.
+
+    Los dos fueron "la situacion no estaba indexada": un par (modo, etiqueta)
+    sin instrucciones, y el modelo improvisando. Este test recorre la matriz
+    completa y falla si alguna celda queda vacia o trae una condicional.
+    """
+    from app.modules.agent.interface import Intent
+
+    for modo in MODOS:
+        for etiqueta in Intent:
+            movimientos = movimientos_para(
+                modo, clasificacion=Classification(intent=etiqueta)
+            )
+            assert movimientos, (modo, etiqueta.value)
+            for m in movimientos:
+                plano_m = plano(m)
+                # Ninguna instruccion puede empezar preguntandole al modelo por
+                # el estado: eso lo resolvio el codigo.
+                assert not plano_m.startswith("si "), (modo, etiqueta.value, m)
+
+
+def test_ninguna_celda_de_la_matriz_deja_pasar_una_condicional_de_estado():
+    """Ni dentro de la frase: "si esencial es", "si llega", "si es no"."""
+    from app.modules.agent.interface import Intent
+
+    sospechosas = ("si esencial", "si llega", "si es no", "si es si",
+                   "solo si ella", "si no viene")
+    for modo in MODOS:
+        for etiqueta in Intent:
+            for m in movimientos_para(modo, clasificacion=Classification(intent=etiqueta)):
+                for frase in sospechosas:
+                    assert frase not in plano(m), (modo, etiqueta.value, frase)

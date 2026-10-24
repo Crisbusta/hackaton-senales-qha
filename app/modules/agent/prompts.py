@@ -88,10 +88,12 @@ MOVIMIENTOS = {
         "Explica un solo termino, el que ella pregunto.",
     ],
     "E4": [
-        "Contarle el resultado que llega en DATOS QUE PUEDES DECIR para el monto "
-        "que ella eligio. Los calculos ya vienen resueltos: no los rehagas.",
-        "Si te pregunta que monto conviene, dile que esa decision la ve con "
-        "el banco. No propongas tu ningun monto.",
+        "Contarle, para el monto que ella eligio, en cuantos meses lo pagaria "
+        "y cuanto ahorraria. Los calculos vienen resueltos: no los rehagas.",
+        "Esos dos datos y nada mas. No repitas su saldo ni su pago minimo: no "
+        "los pidio en este mensaje.",
+        "No propongas tu ningun monto. Si te pregunta que le conviene, dile que "
+        "esa decision la ve con el banco.",
     ],
     "PAUSA_RECHAZO": [
         "Acoger lo que dijo en una frase y dejar la puerta abierta.",
@@ -174,6 +176,16 @@ MOVIMIENTO_OFERTA = (
 MODOS_CON_OFERTA = ("E1", "E2", "E3")
 # AB7: la linea de crisis se ofrece una vez.
 MOVIMIENTO_LINEA = "Ofrecer el *4141."
+# AB7: la oferta de mirar el estado de cuenta por ella se hace una sola vez.
+# Antes el prompt decia "contarle una sola vez" y nada lo registraba: la misma
+# frase aparecio en 10 de 52 turnos medidos. Ahora el movimiento se inyecta o
+# no, segun `opening_offer_made`.
+MOVIMIENTO_OFERTA_INICIAL = (
+    "Contarle, una sola vez en toda la conversacion, que puedes mirar su "
+    "estado de cuenta por ella, de a un dato por vez, y que no tiene que "
+    "abrirlo."
+)
+
 # AB1/AB8: cuando ella ya se perdio una vez.
 MOVIMIENTO_ACLARAR = (
     "Preguntarle UNA vez que lo complica y ofrecerle hasta tres caminos "
@@ -209,6 +221,7 @@ def movimientos_para(
     clasificacion=None,
     puede_ofrecer=False,
     puede_aclarar=False,
+    oferta_inicial_hecha=False,
     limites=(),
     escalon_maximo=None,
     pidio_calculo_cuota=False,
@@ -247,6 +260,8 @@ def movimientos_para(
     else:
         movimientos = list(MOVIMIENTOS[modo])
 
+    if modo == "E0" and not oferta_inicial_hecha:
+        movimientos.append(MOVIMIENTO_OFERTA_INICIAL)
     if modo in MODOS_CON_OFERTA and puede_ofrecer:
         movimientos.append(MOVIMIENTO_OFERTA)
     if modo == "APOYO" and "linea_crisis" not in (limites or ()):

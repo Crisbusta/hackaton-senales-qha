@@ -225,3 +225,36 @@ def test_without_statement_the_bank_is_used_as_is() -> None:
     bank = {"minimo": field(74350)}
 
     assert statement_intake.merge_sources(bank, None) == bank
+
+
+# --- B10: el motor financiero usa el PDF, no solo el banco --------------
+
+
+def test_el_simulador_calcula_con_la_cifra_del_pdf() -> None:
+    """El PDF manda en la conciliacion, pero el motor calculaba solo con el
+    banco: si el PDF corrigio el minimo, la simulacion se hacia con el viejo."""
+    from app.modules.agent.interface import FieldStatus, FinancialField
+    from app.modules.conversation.schemas import ConversationState, StoredStatement
+    from app.modules.conversation.simulation import _cifra_del_estado_de_cuenta
+
+    state = ConversationState(user_id=USER_ID)
+    assert _cifra_del_estado_de_cuenta(state, "minimo") is None  # sin PDF, manda el banco
+
+    state.statement = StoredStatement(
+        fields={"minimo": FinancialField(value=80000, status=FieldStatus.CONFIRMED)}
+    )
+    assert _cifra_del_estado_de_cuenta(state, "minimo") == 80000
+
+
+def test_una_cifra_en_conflicto_no_la_usa_el_simulador() -> None:
+    """`UNRELIABLE` son dos valores que no coinciden y no se elige ninguno:
+    calcular con uno de ellos seria inventar."""
+    from app.modules.agent.interface import FieldStatus, FinancialField
+    from app.modules.conversation.schemas import ConversationState, StoredStatement
+    from app.modules.conversation.simulation import _cifra_del_estado_de_cuenta
+
+    state = ConversationState(user_id=USER_ID)
+    state.statement = StoredStatement(
+        fields={"minimo": FinancialField(value=[80000, 74350], status=FieldStatus.UNRELIABLE)}
+    )
+    assert _cifra_del_estado_de_cuenta(state, "minimo") is None
