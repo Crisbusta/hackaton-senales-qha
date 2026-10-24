@@ -298,6 +298,36 @@ def test_the_offer_to_continue_is_made_once_per_step() -> None:
     assert agent.requests[2].can_offer_continue is False
 
 
+def test_la_oferta_se_anota_en_el_escalon_donde_salio() -> None:
+    """AB2, el ultimo resto del turno de atraso: el contador se acreditaba al
+    modo de ENTRADA, y la oferta sale con el modo FINAL.
+
+    Medido el 24 oct en C02: la oferta del turno que subio de E1 a E2 quedo
+    anotada en E1, E2 nunca registro ninguna y el turno siguiente volvio a
+    preguntar "¿Seguimos o lo dejamos aqui?" en el mismo escalon. El test que
+    ya existia no lo veia porque sus turnos no cambian de modo.
+    """
+    agent = SpyAgent(
+        # Sube E0 -> E1 y ofrece en el mismo turno.
+        _resp("Vence el 3 de noviembre. ¿Seguimos o lo dejamos aquí?",
+              "solicitud_informacion", ConversationEvent.REQUESTED_BALANCE),
+        # Sube E1 -> E2 y vuelve a ofrecer, ahora en E2.
+        _resp("Veamos tu minimo. ¿Seguimos o lo dejamos aquí?",
+              "disposicion_explorar", ConversationEvent.ACCEPTED_NEXT_STEP),
+        _resp("Te leo.", "tangente"),
+    )
+    service, _ = make_service(agent)
+
+    run(service, "cuando vence?", "SM1")
+    run(service, "ya, sigamos", "SM2")
+    assert agent.requests[1].mode is ConversationMode.BALANCE_OVERVIEW
+    assert agent.requests[1].can_offer_continue is True   # primera vez en E2
+
+    run(service, "otra cosa", "SM3")
+    assert agent.requests[2].mode is ConversationMode.BALANCE_OVERVIEW
+    assert agent.requests[2].can_offer_continue is False  # ya salio en E2
+
+
 def test_the_crisis_line_is_offered_once() -> None:
     """AB7: repetir el mismo limite suena a bucle."""
     agent = SpyAgent(

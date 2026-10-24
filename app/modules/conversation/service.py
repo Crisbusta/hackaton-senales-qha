@@ -151,14 +151,21 @@ class ConversationService:
         state: ConversationState,
         classification: Classification,
         reply: str,
-        previous_mode: ConversationMode,
     ) -> None:
         """Lo que hay que recordar para no repetirse en el próximo turno."""
         # AB2: si la oferta salió, se consume en el escalón donde salió. El
         # reconocimiento es el mismo que usa el validador para rechazarla: con
         # dos patrones distintos, ampliar uno solo deja la asimetría peor.
-        if previous_mode in transitions.MODOS_CON_OFERTA and es_oferta_de_continuar(reply):
-            key = previous_mode.value
+        #
+        # El escalón es el FINAL del turno, que es el modo con el que el
+        # redactor escribió. Con el modo de ENTRADA el contador se acreditaba
+        # al escalón anterior: medido el 24 oct en C02, la oferta del turno 3
+        # (E1 → E2) quedó anotada en E1, E2 nunca registró ninguna y el turno
+        # 4 volvió a ofrecer "¿Seguimos o lo dejamos aquí?" en el mismo
+        # escalón. Es el ultimo resto del turno de atraso: mientras el modelo
+        # redactaba con el modo de entrada, `previous_mode` era el correcto.
+        if state.mode in transitions.MODOS_CON_OFERTA and es_oferta_de_continuar(reply):
+            key = state.mode.value
             state.offers_by_mode[key] = state.offers_by_mode.get(key, 0) + 1
 
         # AB7: la línea de crisis se ofrece una vez.
@@ -383,6 +390,7 @@ class ConversationService:
         if state.mode != ConversationMode.INSTALLMENT_PAUSE:
             state.installment_calc_requested = False
             state.installment_essential = None
+            state.installment_calc_shown = False
 
         # T10: la simulación corre DESPUÉS de la transición, no antes. Antes
         # tenía que adelantarse para que el cálculo viajara en el mismo turno,
@@ -413,9 +421,21 @@ class ConversationService:
             already_stated_limits=list(state.stated_limits),
             max_mode_reached=state.max_mode_reached,
             requested_installment_calculation=state.installment_calc_requested,
+            installment_calc_shown=state.installment_calc_shown,
             opening_offer_made=state.opening_offer_made,
             preferences=dict(state.preferences),
         )
+        # El cálculo de la cuota sale una vez, con el monto que ella dio. Desde
+        # el turno siguiente lo que falta es respetar lo que decida, no pedirle
+        # los mismos datos otra vez; una compra nueva vuelve a encender el
+        # pedido en `simulation.plan_turn`.
+        #
+        # Va después de armar el request, no antes: apagarlo antes se lo quita
+        # a ESTE turno, y `calculos_visibles` descartaba `cuota_mensual`
+        # justo en el turno que tenía que contarla.
+        if "minimo_con_cuota" in financial_data:
+            state.installment_calc_shown = True
+            state.installment_calc_requested = False
         # Lo que queda del presupuesto del turno, sin piso: si clasificar se lo
         # comió, redactar no alcanza y es mejor fallar ahora —el webhook tiene
         # su texto de respaldo— que pasarse de la ventana de Twilio.
@@ -449,7 +469,7 @@ class ConversationService:
             ConversationMessage(role="user", content=message.body),
             ConversationMessage(role="assistant", content=reply),
         ]
-        self._record_anti_loop(state, classification, reply, previous_mode)
+        self._record_anti_loop(state, classification, reply)
         state.last_intent = classification.intent
         state.turn_count += 1
         progress.record_turn(

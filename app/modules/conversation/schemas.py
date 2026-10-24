@@ -83,6 +83,11 @@ class ConversationState(BaseModel):
     installment_calc_requested: bool = False
     # Si la compra en cuotas es esencial (remedios), no se ofrece pausa ni cálculo.
     installment_essential: bool | None = None
+    # T10: el cálculo de la cuota ya salió, con el monto y las cuotas que ella
+    # dio. Sin esto, el turno siguiente volvía a pedirle los mismos datos:
+    # medido el 24 oct, "igual la voy a comprar" contestaba "¿cuál es el monto
+    # y en cuántas cuotas?" con la cifra ya entregada el turno anterior.
+    installment_calc_shown: bool = False
 
     # T07: el último estado de cuenta en PDF que ella envió.
     statement: StoredStatement | None = None

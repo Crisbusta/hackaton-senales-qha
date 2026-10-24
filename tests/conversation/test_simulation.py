@@ -12,7 +12,9 @@ from app.modules.agent.interface import (
     WriteRequest,
 )
 from app.modules.banking.provider import MockBankProvider
+from app.modules.conversation import simulation
 from app.modules.conversation.repository import InMemoryConversationRepository
+from app.modules.conversation.schemas import ConversationState
 from app.modules.conversation.service import ConversationService
 from app.modules.conversation.simulation import (
     chose_installment_calculation,
@@ -181,6 +183,29 @@ def test_installment_option_two_then_amount_gives_new_minimum() -> None:
     assert request.financial_data["minimo"].value == 74_350
     assert request.financial_data["minimo_con_cuota"].value == 84_350
     assert request.calculations == {"cuota_mensual": 10_000}
+    # El pedido se apaga DESPUES de este turno, no antes: el agente filtra
+    # `cuota_mensual` con este flag (`prompts.calculos_visibles`), asi que
+    # apagarlo antes deja sin la cifra justo al turno que tiene que contarla.
+    assert request.requested_installment_calculation is True
+    assert chat.state.installment_calc_shown is True
+    assert chat.state.installment_calc_requested is False
+
+
+def test_despues_del_calculo_el_turno_siguiente_no_trae_cifras() -> None:
+    """C05 turno 4: ella ya dio el monto y ya vio la cuota. Lo que falta es
+    respetar lo que decida, y para eso el turno no necesita ningun dato."""
+    chat = Conversation(mode=ConversationMode.INSTALLMENT_PAUSE)
+
+    chat.send("2")
+    chat.agent.turns.append(turno("Serían $10.000 al mes."))
+    chat.send("$60.000 en 6 cuotas")
+    chat.agent.turns.append(turno("La decisión es tuya."))
+    chat.send("igual la voy a comprar")
+
+    request = chat.last_request
+    assert request.installment_calc_shown is True
+    assert request.financial_data == {}
+    assert request.calculations == {}
 
 
 def test_essential_purchase_gets_no_calculation() -> None:
@@ -229,3 +254,26 @@ def test_un_monto_a_secas_sigue_siendo_el_total():
 def test_sin_el_minimo_no_se_puede_sumar_y_se_toma_tal_cual():
     """Sin banco no hay minimo: se devuelve lo que ella dijo, no se inventa."""
     assert payment_amount("y si pago 50 mil mas?") == 50000
+
+
+# --- B11: el calculo de la cuota sale una vez -------------------------
+
+
+def test_dar_el_monto_y_las_cuotas_tambien_pide_el_calculo() -> None:
+    """Para poder apagar el pedido cuando el calculo ya salio, darlo tiene que
+    volver a encenderlo: si no, una compra nueva llegaria sin calculo."""
+    state = ConversationState(user_id="u", mode=ConversationMode.INSTALLMENT_PAUSE)
+
+    simulation.plan_turn(state, "60 mil en 6 cuotas")
+
+    assert state.installment_calc_requested is True
+
+
+def test_una_compra_esencial_no_pide_el_calculo() -> None:
+    state = ConversationState(
+        user_id="u", mode=ConversationMode.INSTALLMENT_PAUSE, installment_essential=True
+    )
+
+    simulation.plan_turn(state, "60 mil en 6 cuotas")
+
+    assert state.installment_calc_requested is False

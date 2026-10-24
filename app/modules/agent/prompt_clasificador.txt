@@ -73,6 +73,7 @@ cuidadora_agotada        "mi mamá me ocupa todo el día"
 saludo                   "hola", "buenas tardes", sin pedir nada
 tangente                 algo que no es sobre sus cuentas
 pide_consejo             "¿cuánto debería pagar?"
+reaccion_a_cifra         "más alto de lo que pensaba", "qué susto"
 pregunta_dicom           "¿me van a poner en DICOM?"
 pregunta_identidad       "¿eres una persona?"
 no_texto                 un audio o una imagen
@@ -87,6 +88,8 @@ Entre cansancio y angustia, elige cansancio. "no puedo más", "ya no doy más" y
 no querer vivir o de hacerse daño.
 Un saludo solo es saludo. No es ambiguo: ambiguo es haber dicho algo que no se
 entiende.
+Comentar una cifra que acaba de ver es reaccion_a_cifra, no ambiguo: ella
+entendió perfecto y está diciendo lo que le pareció.
 Pedir un dato estando en una pausa es solicitud_informacion, no
 retoma_voluntaria: ella pidió algo concreto.
 
@@ -103,7 +106,7 @@ junto, null si no dijo nada del ritmo.
 FORMATO DE SALIDA
 Devuelve solo este JSON, con estos cuatro campos y ninguno más:
 {
-  "etiqueta": "<una de las 17>",
+  "etiqueta": "<una de las 18>",
   "esencial": true | false | null,
   "monto_mencionado": <número> | null,
   "ritmo": "mas_lento" | "todo_de_una" | null

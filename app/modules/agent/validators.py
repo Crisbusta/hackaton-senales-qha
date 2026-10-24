@@ -221,6 +221,12 @@ def es_oferta_de_continuar(mensaje):
 def chequeo_movimientos(mensaje, estado):
     if estado.get("modo") not in MODOS_CON_OFERTA:
         return True, None
+    if estado.get("puedes_aclarar_ruta"):
+        # Las opciones numeradas llevan la salida escrita "o lo dejamos aqui"
+        # porque C la pidio asi, y `RE_OFERTA` no distingue esa salida de la
+        # oferta de seguir. Medido el 24 oct en C02 turno 5: el turno de
+        # aclaracion se rechazaba siempre y salia el texto de respaldo.
+        return True, None
     if es_oferta_de_continuar(mensaje) and not estado.get("puedes_ofrecer_continuar", False):
         return False, "ofrece seguir con la oferta ya usada en este escalon (AB2)"
     return True, None
@@ -265,6 +271,13 @@ ANDAMIAJE = (
     "faltante_para_gastos_esenciales",
     "cuota_mensual",
 )
+
+# Los tres estados de un campo ("confirmado", "no confiable", "ausente") NO
+# estan en la lista. Son espanol corriente: medido el 24 oct, el modelo
+# escribio "No tengo confirmado el monto de la cuota mensual", una frase
+# correcta que el chequeo rechazaba. La fuga que si existia --"Tu pago minimo
+# confirmado es $74.350"-- se corrigio en el origen: el bloque de datos ya no
+# anota el estado cuando es el normal (ver `prompts._formatear_valor`).
 
 
 def chequeo_fuga_de_andamiaje(mensaje):

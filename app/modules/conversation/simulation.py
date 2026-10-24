@@ -158,11 +158,13 @@ def plan_turn(
         if amount:
             state.chosen_payment = amount
             state.mode = ConversationMode.AMOUNT_SIMULATION
-    if (
-        state.mode == ConversationMode.INSTALLMENT_PAUSE
-        and state.installment_essential is not True
-        and chose_installment_calculation(text)
-    ):
+    if state.mode == ConversationMode.INSTALLMENT_PAUSE and (
+        state.installment_essential is not True
+    ) and (chose_installment_calculation(text) or installment_purchase(text)):
+        # Dar el monto y las cuotas es pedir el cálculo, igual que elegir la
+        # opción 2. Así el flag se puede apagar cuando el cálculo ya salió
+        # —desde ahí lo que falta es respetar lo que decida, no volver a
+        # pedirle los mismos datos— y una compra nueva lo vuelve a encender.
         state.installment_calc_requested = True
 
 

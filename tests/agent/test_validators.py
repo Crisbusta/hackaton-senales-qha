@@ -167,6 +167,20 @@ def test_oferta_sin_permiso_falla():
     assert r.validadores["movimientos"] == "falla"
 
 
+def test_la_salida_de_las_opciones_no_cuenta_como_la_oferta_de_seguir():
+    """MOVIMIENTO_ACLARAR pide la salida escrita "o lo dejamos aqui" porque C
+    la pidio asi, y `RE_OFERTA` no la distingue de la oferta de seguir.
+    Medido el 24 oct en C02 turno 5: el turno de aclaracion se rechazaba
+    siempre --AB2 ya habia consumido la oferta en ese escalon-- y Patricia
+    recibia el texto de respaldo en vez de las rutas."""
+    estado = dict(E2_SIN_OFERTA, puedes_aclarar_ruta=True)
+    r = validar(
+        salida("Que te complica?\n1. El pago minimo\n2. El saldo\no lo dejamos aqui"),
+        estado, DATOS_E2,
+    )
+    assert r.validadores["movimientos"] == "ok", r.validadores
+
+
 # --- chequeo 5: coherencia etiqueta-modo ------------------------------
 
 def test_cifra_en_apoyo_falla():

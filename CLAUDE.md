@@ -61,7 +61,7 @@ ConversationService.handle()            conversation/service.py
 
   --- 2. DECIDIR (reglas deterministas, sin modelo) ---
   6. apply_event() + transitions.siguiente_modo() → el modo FINAL del turno
-  7. installment_essential / installment_calc_requested
+  7. installment_essential / installment_calc_requested / installment_calc_shown
   8. simulation.plan_turn(): "¿y si pago 100 mil?" → E4 con ese monto
   9. banco + PDF (si hay consentimiento y no pidió ocultar cifras) → financial_data
      con EXACTAMENTE los campos de fields_for_mode(modo_final, etiqueta)
@@ -114,8 +114,18 @@ diferida), repositorio, banco y servicio en `app.state`.
 - `ClassifyRequest` no tiene ningún campo donde quepa un monto: es una garantía por construcción,
   no una regla que haya que vigilar.
 - `FIELDS_BY_MODE` + `fields_for_mode()` es la **única** tabla de qué dato pertenece a qué modo;
-  la usan backend y agente.
-- `Intent` (17 etiquetas, StrEnum) pero `Classification.intent` es `str`: comparar siempre contra
+  la usan backend y agente. Dos etiquetas no reciben ningún campo en ningún modo:
+  `reaccion_a_cifra` y `ambiguo`. Ella acaba de ver sus cifras y no está pidiendo un dato;
+  repetirlas rompe AB6 y, medido, también el presupuesto del turno.
+- `LIMIT_CRISIS_LINE` vive en el contrato, no en `transitions.py`: el backend registra el límite y
+  el agente decide con él (`already_stated_limits`), así que la constante no puede ser de uno de
+  los dos lados. El texto de crisis que pregunta "¿estás a salvo?" sale la primera vez; desde la
+  segunda sale el de refuerzo, y lo que distingue los dos casos es si las líneas ya se dijeron, no
+  el modo (con el orden nuevo, una crisis siempre llega a `write()` ya en APOYO).
+- `installment_calc_shown`: el cálculo de la cuota sale una vez, con el monto que ella dio. Desde
+  ahí lo que falta es respetar lo que decida, no volver a pedirle los mismos datos; una compra
+  nueva vuelve a encender el pedido en `simulation.plan_turn`.
+- `Intent` (18 etiquetas, StrEnum) pero `Classification.intent` es `str`: comparar siempre contra
   `Intent.X` sin asumir que el valor está en el enum. `UNKNOWN` está reservado para "no hubo
   clasificación" (el proveedor falló); una etiqueta que el modelo invente viaja tal cual.
 - Montos `int` (CLP). Fechas y tasas viajan como texto formateado; si hace falta operar una tasa,
@@ -148,12 +158,36 @@ diferida), repositorio, banco y servicio en `app.state`.
 ## Configuración clave
 
 `app/core/config.py` (pydantic-settings, lee `.env`). Las que importan para entender el sistema:
-`APP_ENV`, `AGENT_IMPL` (`mock`|`llm`), `AGENT_TIMEOUT_S` (12; el presupuesto interno del agente
+`APP_ENV`, `AGENT_IMPL` (`mock`|`llm`), `AGENT_TIMEOUT_S` (13; el presupuesto interno del agente
 es `AGENT_TIMEOUT_S − agent_budget_margin_s`; Twilio corta a ~15 s), `OPENAI_TIMEOUT_S` (9),
+`OPENAI_CLASSIFY_TIMEOUT_S` (7), `OPENAI_MAX_OUTPUT_TOKENS` (450),
 `PUBLIC_BASE_URL` (solo el origen, sin path ni `/` final), `TWILIO_AUTH_TOKEN` (el **primario** de
 Twilio), `TWILIO_ACCOUNT_SID` (para descargar el PDF), `MOCK_BANK_SCENARIO`, `DEMO_ADMIN_NUMBERS`,
 `DASHBOARD_PASSWORD`, `DATABASE_URL` (vacío = en memoria; con valor = PostgreSQL). En Railway los valores
 van sin comillas en el campo de valor.
+
+### Los plazos del turno
+
+Twilio corta el webhook a los ~15 s y el turno son **dos llamadas en serie**, así que los plazos
+no son independientes:
+
+- `OPENAI_CLASSIFY_TIMEOUT_S` (7) es una **reserva**, no un techo: la clasificación no puede
+  gastar más que eso para que a la redacción le quede su parte. El agente aplica la misma reserva
+  hacia dentro, también a su modelo de respaldo.
+- `OPENAI_TIMEOUT_S` (9) es el **techo** de la redacción, acotado además por lo que quede del
+  presupuesto. La redacción **no tiene modelo de respaldo**: medido, el principal se cortaba a los
+  7 s y el respaldo llevaba el turno a 9,7 s, duplicando el costo del paso más caro justo cuando
+  ya no queda tiempo. Si falla, sale el texto de respaldo del modo, que validó C.
+- `Settings` valida que `agent_turn_budget_s >= openai_classify_timeout_s + MIN_REDACCION_S`: un
+  presupuesto que no alcanza no arranca, en vez de degradarse en silencio.
+- `OPENAI_MAX_OUTPUT_TOKENS` (450) es una red de seguridad de latencia, no un límite de estilo: la
+  latencia es casi lineal en los tokens (incluidos los de razonamiento, que son la mayoría). El
+  turno legítimo más largo medido es E3 con 295 tokens y 6,5 s. Pasarse del techo rompe el JSON y
+  el turno sale con el texto de respaldo: el mismo final que el timeout, pero al instante y sin
+  gastarse los 9 s.
+
+Medido el 24 oct contra el modelo real, 22 clasificaciones y 18 redacciones: clasificar 1,6–4,1 s
+(mediana 2,0), redactar 1,6–6,5 s (mediana 2,8). El peor turno observado punta a punta, 10,7 s.
 
 ## Tests
 
@@ -198,13 +232,19 @@ no coinciden.
 - **Detección de T10 por reglas**: solo con montos explícitos ("100 mil", "$100.000", "80 lucas").
 - **`faltante_para_gastos_esenciales`**: el texto lo define C; el agente no debe mencionarlo hasta
   que esté validado.
-- **El modelo de respaldo es inalcanzable si el principal se cae por timeout**: el respaldo
-  necesita `OPENAI_TIMEOUT_S` libres del presupuesto (`AGENT_TIMEOUT_S − AGENT_BUDGET_MARGIN_S`),
-  y un timeout del principal consume justo ese tiempo. Con los valores por defecto (9 de 11 s) solo
-  cubre los errores rápidos (401, 429 inmediato), nunca los lentos.
-- **Dos llamadas en serie**: medido de punta a punta, 5,5–9,4 s por turno con los plazos de
-  "Los plazos del turno", dentro de la ventana de Twilio. Lo que queda sin red es el peor caso
-  absoluto: si las dos se van al máximo, el turno sale con el texto de respaldo del modo. La salida
-  de fondo es responder por la API REST de Twilio en vez de TwiML, que elimina el techo de los
-  15 s; `OPENAI_CLASSIFY_MODEL` permite probar un clasificador más rápido sin tocar código.
+- **El modelo de respaldo solo existe en la clasificación**, y ahí solo cubre los errores rápidos
+  (401, 429 inmediato): necesita tiempo libre dentro de su propia reserva, y un timeout del
+  principal se la come. En la redacción no hay respaldo a propósito (ver "Los plazos del turno").
+- **Al salir de una pausa, el turno llega con todos los campos del escalón más alto**: ella
+  preguntó una cosa ("¿cuánto era el mínimo?") y recibe el mínimo, el saldo, el vencimiento y el
+  desglose. `_siguiente_escalon(max_modo)` es correcto para el modo, pero `FIELDS_BY_MODE` no
+  distingue "entrar al escalón" de "volver a él", así que repite cifras ya vistas —justo lo que
+  AB6 nombra— y va contra "de a un dato por vez". Para arreglarlo bien hace falta decidir qué
+  responde ese turno (C) y probablemente etiquetas más finas que `solicitud_informacion`.
+- **Dos llamadas en serie**: medido el 24 oct, el peor turno punta a punta fue 10,7 s, dentro de la
+  ventana de Twilio; los plazos y las medianas están en "Los plazos del turno". Lo que queda sin
+  red es el peor caso absoluto: si las dos se van al máximo, el turno sale con el texto de respaldo
+  del modo. La salida de fondo es responder por la API REST de Twilio en vez de TwiML, que elimina
+  el techo de los 15 s; `OPENAI_CLASSIFY_MODEL` permite probar un clasificador más rápido sin
+  tocar código.
 - `railway.json` (Config as Code) está deprecado por Railway a partir del 2026-12-01.

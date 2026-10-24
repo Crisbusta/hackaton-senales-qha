@@ -154,3 +154,25 @@ def test_a_model_that_rejects_temperature_is_only_discovered_once(monkeypatch):
     # primer turno: con temperature (falla) y sin (ok). Los dos siguientes:
     # solo sin temperature.
     assert vistos == [True, False, False, False]
+
+
+def test_la_redaccion_lleva_techo_de_tokens_y_la_clasificacion_no(monkeypatch):
+    """Red de seguridad de latencia: la latencia es casi lineal en los tokens
+    y un turno que se desboca se come el presupuesto antes de cortarse. La
+    clasificacion no lo necesita --cuatro campos cortos-- y ahi un techo solo
+    agrega una forma de fallar."""
+    vistos = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            vistos.append(kwargs.get("max_completion_tokens"))
+            return FakeResponse(json.dumps({"mensaje": "ok", "etiqueta": "cierre",
+                                            "esencial": None, "monto_mencionado": None}))
+
+    fake = type("C", (), {"chat": type("Ch", (), {"completions": FakeCompletions()})})()
+    monkeypatch.setattr(client, "_get_client", lambda: fake)
+
+    client.call_model("sys", "ctx", schema=client.WRITE_SCHEMA)
+    client.call_model("sys", "ctx", schema=client.CLASSIFY_SCHEMA)
+
+    assert vistos == [Settings(openai_api_key="t").openai_max_output_tokens, None]

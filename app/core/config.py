@@ -81,6 +81,16 @@ class Settings(BaseSettings):
     # caso tipico la clasificacion gasta 3 s y la redaccion se queda con 9.
     openai_timeout_s: float = 9.0
 
+    # Techo de tokens de la redaccion (incluye los de razonamiento, que son
+    # la mayoria). Red de seguridad, no un limite de estilo: la latencia es
+    # casi lineal en los tokens, y un turno que se desboca se come el
+    # presupuesto entero antes de cortarse. Medido el 24 oct: el turno mas
+    # largo y legitimo es E3 con 295 tokens y 6,5 s, asi que 450 deja la mitad
+    # de aire y queda igual por debajo de lo que alcanza a caber en los 9 s de
+    # `openai_timeout_s`. Pasarse rompe el JSON y el turno sale con el texto de
+    # respaldo del modo: el mismo final que el timeout, pero al instante.
+    openai_max_output_tokens: int = 450
+
     # Margen que el agente le deja al resto del turno (validar, registrar,
     # armar el TwiML) dentro del presupuesto de `agent_timeout_s`.
     agent_budget_margin_s: float = 1.0

@@ -119,6 +119,10 @@ def _call_one(model: str, messages: list[dict], temperature: float, schema=None,
     }
     if model not in _SIN_TEMPERATURE:
         kwargs["temperature"] = temperature
+    if schema is not CLASSIFY_SCHEMA:
+        # Solo la redaccion: la clasificacion devuelve cuatro campos cortos y
+        # no hay forma de que se alargue. Ver el comentario del ajuste.
+        kwargs["max_completion_tokens"] = get_settings().openai_max_output_tokens
 
     if timeout is not None:
         kwargs["timeout"] = timeout

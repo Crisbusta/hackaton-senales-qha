@@ -251,7 +251,7 @@ def test_calculations_and_mentioned_amount_are_integers() -> None:
 def test_the_published_labels_are_the_contract() -> None:
     """El backend necesita nombrarlas para las transiciones de T06; como
     strings sueltos, un typo rompe una transición sin que nadie lo note."""
-    assert len(list(Intent)) == 17
+    assert len(list(Intent)) == 18
     assert Intent.DISTRESS == "angustia_fuerte"
     assert Intent.INSTALLMENT_INTENT == "intencion_compra_cuotas"
 
@@ -266,6 +266,15 @@ def test_intent_stays_a_free_string_in_the_response() -> None:
 
 def test_fields_by_mode_is_the_single_source_of_truth() -> None:
     assert fields_for_mode(ConversationMode.GREETING) == []
+
+
+def test_reaccionar_o_no_entender_no_trae_ninguna_cifra() -> None:
+    """Ella ya vio sus cifras: repetirlas rompe AB6. Medido el 24 oct, en C02
+    el turno 4 ("mas alto de lo que pensaba") y el 5 ("no se") salian con las
+    tres cifras de nuevo."""
+    for etiqueta in (Intent.REACTS_TO_FIGURE, Intent.AMBIGUOUS):
+        assert fields_for_mode(ConversationMode.BALANCE_OVERVIEW, etiqueta) == [], etiqueta
+        assert fields_for_mode(ConversationMode.MINIMUM_BREAKDOWN, etiqueta) == [], etiqueta
     assert fields_for_mode(ConversationMode.DUE_DATE) == ["vencimiento"]
     assert "saldo" not in fields_for_mode(ConversationMode.DUE_DATE)
     for mode in (ConversationMode.PAUSE, ConversationMode.SUPPORT,

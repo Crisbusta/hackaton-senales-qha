@@ -507,6 +507,63 @@ def test_todo_par_modo_etiqueta_tiene_movimientos_resueltos():
                 assert not plano_m.startswith("si "), (modo, etiqueta.value, m)
 
 
+def test_cuando_el_calculo_ya_salio_no_le_pide_el_monto_otra_vez():
+    """C05 turno 4, medido el 24 oct: "igual la voy a comprar" contestaba
+    "¿cual es el monto y en cuantas cuotas?" con la cifra ya entregada el
+    turno anterior. Caia en MOVIMIENTOS_PEDIR_MONTO_CUOTAS porque el unico
+    estado que habia era "pidio el calculo"."""
+    movimientos = movimientos_para(
+        "PAUSA_COMPRA",
+        clasificacion=Classification(intent=Intent.INSTALLMENT_INTENT),
+        pidio_calculo_cuota=True,
+        calculo_ya_mostrado=True,
+        datos={},
+    )
+    unidos = plano(" ".join(movimientos))
+    assert "no le pidas el monto" in unidos
+    assert "preguntarle una sola vez el monto" not in unidos
+
+
+def test_una_compra_nueva_vuelve_a_contar_la_cifra():
+    """El arreglo de arriba no puede volverse "despues del primer calculo no
+    se calcula mas": con la cuota nueva en los datos, el movimiento es
+    contarla."""
+    movimientos = movimientos_para(
+        "PAUSA_COMPRA",
+        clasificacion=Classification(intent=Intent.INSTALLMENT_INTENT),
+        pidio_calculo_cuota=True,
+        calculo_ya_mostrado=True,
+        datos={"minimo_con_cuota": {"valor": 95184, "estado": "confirmado"}},
+    )
+    assert "cuanto le sumaria esa cuota" in plano(" ".join(movimientos))
+
+
+def test_un_escalon_sin_datos_no_ordena_contar_cifras():
+    """La contradiccion que el 24 oct rompio C02: en E2 los movimientos
+    ordenan contarle el minimo y el saldo, y con `reaccion_a_cifra` o
+    `ambiguo` el bloque de datos llega vacio. El modelo repetia las tres
+    cifras que ella acababa de ver (327 tokens, 8,2 s, timeout 2 de 3 veces) o
+    el validador le rechazaba la respuesta."""
+    for etiqueta in (Intent.REACTS_TO_FIGURE, Intent.AMBIGUOUS):
+        movimientos = movimientos_para(
+            "E2", clasificacion=Classification(intent=etiqueta), datos={}
+        )
+        unidos = plano(" ".join(movimientos))
+        assert "contarle el pago minimo" not in unidos, etiqueta.value
+        assert "no repitas ninguna cifra" in unidos, etiqueta.value
+
+
+def test_con_datos_el_escalon_sigue_ordenando_contarlos():
+    """El arreglo de arriba no puede volverse "E2 ya no cuenta cifras": con
+    datos inyectados, el movimiento del escalon es el que manda."""
+    movimientos = movimientos_para(
+        "E2",
+        clasificacion=Classification(intent=Intent.INFO_REQUEST),
+        datos={"minimo": {"valor": 74350, "estado": "confirmado"}},
+    )
+    assert "contarle el pago minimo" in plano(" ".join(movimientos))
+
+
 def test_ninguna_celda_de_la_matriz_deja_pasar_una_condicional_de_estado():
     """Ni dentro de la frase: "si esencial es", "si llega", "si es no"."""
     from app.modules.agent.interface import Intent

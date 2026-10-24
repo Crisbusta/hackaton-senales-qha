@@ -90,7 +90,7 @@ class ConversationEvent(StrEnum):
 
 
 class Intent(StrEnum):
-    """Las 17 etiquetas que el modelo puede emitir (T04).
+    """Las 18 etiquetas que el modelo puede emitir (T04).
 
     Están acá y no solo en el agente porque el backend necesita nombrarlas:
     `previous_intent` habilita datos condicionales, `intencion_compra_cuotas`
@@ -116,6 +116,13 @@ class Intent(StrEnum):
     SHAME_GUILT = "verguenza_culpa"
     EXHAUSTED_CAREGIVER = "cuidadora_agotada"
     ASKS_ADVICE = "pide_consejo"
+    # Reacciona a una cifra que acaba de ver ("mas alto de lo que pensaba").
+    # Existe porque sin ella caia en `ambiguo`, que es un fallo de
+    # reconocimiento: medido el 24 oct en C02, el turno 4 incrementaba
+    # `recognition_failures` y le armaba las opciones numeradas de rescate a
+    # alguien que habia entendido perfecto. No avanza la Escalera (no esta en
+    # AVANCE) y no repite cifras (no recibe campos).
+    REACTS_TO_FIGURE = "reaccion_a_cifra"
     # Preguntas que habilitan datos condicionales o límites.
     ASKS_BILLED_AMOUNT = "pregunta_monto_facturado"
     ASKS_DICOM = "pregunta_dicom"
@@ -187,6 +194,14 @@ def fields_for_mode(
     La usan los dos lados: el backend para armar `financial_data`, el agente
     para volver a filtrar lo que recibió.
     """
+    if previous_intent in (Intent.AMBIGUOUS, Intent.REACTS_TO_FIGURE):
+        # Ni "no se" ni "mas alto de lo que pensaba" son un pedido de dato.
+        # Repetirle las cifras que acaba de ver rompe AB6, y medido el 24 oct
+        # tambien rompia el presupuesto: el turno salia con las tres cifras
+        # mas las rutas numeradas, 327 tokens de salida, 8,2 s, y 2 de 3 veces
+        # se corto por timeout. Lo que ella necesita aca son los nombres de
+        # las rutas, no sus valores.
+        return []
     fields = list(FIELDS_BY_MODE.get(ConversationMode(mode), ()))
     if mode == ConversationMode.INSTALLMENT_PAUSE and requested_installment_calculation:
         fields += [f for f in INSTALLMENT_CALC_FIELDS if f not in fields]
@@ -220,6 +235,11 @@ def calculations_allowed(
 # False => el usuario pidió explícitamente no ver cifras; el agente no debe
 # mostrar montos ni insistir.
 PREF_SHOW_FINANCIAL_FIGURES = "show_financial_figures"
+
+# AB7: los limites de `already_stated_limits`. Vocabulario compartido: el
+# backend los registra y el agente decide con ellos, asi que la constante no
+# puede vivir en ninguno de los dos lados.
+LIMIT_CRISIS_LINE = "linea_crisis"
 
 
 class ConversationMessage(BaseModel):
@@ -329,6 +349,11 @@ class WriteRequest(BaseModel):
 
     # True cuando ella eligio ver cuanto le sumaria la cuota al minimo.
     requested_installment_calculation: bool = False
+    # True cuando el calculo de la cuota ya salio en un turno anterior. Lo que
+    # falta entonces no es pedirle el monto otra vez --ya lo dio-- sino
+    # respetar lo que decida. Medido el 24 oct en C05 turno 4: "igual la voy a
+    # comprar" contestaba "¿cual es el monto y en cuantas cuotas?".
+    installment_calc_shown: bool = False
 
     # AB7: True si ya se le conto una vez que Contigo puede mirar su estado de
     # cuenta por ella. Con esto el movimiento de E0 deja de repetirse.

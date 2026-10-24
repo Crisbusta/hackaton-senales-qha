@@ -14,6 +14,7 @@ import pytest
 from app.modules.agent import observability as obs
 from app.modules.agent import service
 from app.modules.agent.interface import (
+    LIMIT_CRISIS_LINE,
     PREF_SHOW_FINANCIAL_FIGURES,
     Agent,
     Classification,
@@ -197,6 +198,34 @@ def test_crisis_never_reaches_the_provider(log_path):
     assert clasificacion.event is ConversationEvent.CRISIS_SUPPORT_NEEDED
 
 
+def test_un_no_en_apoyo_se_clasifica_como_crisis_sin_llamar_al_modelo(log_path):
+    """C10 (d): el texto de crisis termina preguntando si esta a salvo, asi
+    que el turno siguiente responde a eso. Fuera de APOYO el mismo "no, no
+    estoy bien" es cuidadora_agotada y lo decide el modelo."""
+    fake = FakeModel([])  # si se llamara, revienta por cola vacia
+    clasificacion = clasificar(
+        _classify_request("no, no estoy bien", mode=ConversationMode.SUPPORT),
+        call=fake,
+        log_path=log_path,
+    )
+
+    assert fake.calls == 0
+    assert clasificacion.intent == "angustia_fuerte"
+    assert clasificacion.event is ConversationEvent.CRISIS_SUPPORT_NEEDED
+
+
+def test_fuera_de_apoyo_un_no_estoy_bien_lo_etiqueta_el_modelo(log_path):
+    fake = FakeModel([_clasificado("cuidadora_agotada")])
+    clasificacion = clasificar(
+        _classify_request("no, no estoy bien", mode=ConversationMode.GREETING),
+        call=fake,
+        log_path=log_path,
+    )
+
+    assert fake.calls == 1
+    assert clasificacion.intent == "cuidadora_agotada"
+
+
 def test_la_crisis_no_gasta_una_llamada_de_redaccion(log_path):
     """Capa 3: el texto fijo sale sin llamar al modelo.
 
@@ -222,13 +251,31 @@ def test_la_crisis_no_gasta_una_llamada_de_redaccion(log_path):
     assert "*4141" in respuesta.message and "131" in respuesta.message
 
 
+def test_la_primera_crisis_es_el_texto_que_pregunta_si_esta_a_salvo(log_path):
+    """El modo que llega al redactor es el FINAL del turno, y una crisis
+    siempre lo pone en APOYO. Mientras la condicion fue `modo == APOYO`, el
+    texto de entrada --el unico que pregunta "¿estas a salvo?"-- quedo
+    inalcanzable: medido el 24 oct, en C10 (a) salia el de refuerzo."""
+    respuesta = redactar(
+        _request("ya no quiero vivir", mode=ConversationMode.SUPPORT,
+                 etiqueta="angustia_fuerte", financial_data={}),
+        call=FakeModel([]),
+        log_path=log_path,
+    )
+
+    assert respuesta.protected_text
+    assert "a salvo" in respuesta.message
+    assert "Gracias por decirme" not in respuesta.message
+
+
 def test_en_apoyo_la_crisis_refuerza_sin_repetir_el_texto_de_entrada(log_path):
-    """AB7: estando ya en APOYO, esto responde a "¿estas a salvo?", no es una
-    primera deteccion. Repetir el texto completo le dice el mismo limite dos
-    veces y suena a bucle."""
+    """AB7: si las lineas ya salieron, esto responde a "¿estas a salvo?", no
+    es una primera deteccion. Repetir el texto completo le dice el mismo
+    limite dos veces y suena a bucle."""
     respuesta = redactar(
         _request("no, no estoy bien", mode=ConversationMode.SUPPORT,
-                 etiqueta="angustia_fuerte", financial_data={}),
+                 etiqueta="angustia_fuerte", financial_data={},
+                 already_stated_limits=[LIMIT_CRISIS_LINE]),
         call=FakeModel([]),
         log_path=log_path,
     )

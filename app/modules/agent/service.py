@@ -31,6 +31,7 @@ from app.modules.agent import observability as obs
 from app.modules.agent import prefilter, prompts, validators
 from app.modules.agent.client import CLASSIFY_SCHEMA, WRITE_SCHEMA, call_model
 from app.modules.agent.interface import (
+    LIMIT_CRISIS_LINE,
     PREF_SHOW_FINANCIAL_FIGURES,
     AgentReply,
     Classification,
@@ -113,6 +114,11 @@ def clasificar(request: ClassifyRequest, call=call_model, log_path=None) -> Clas
     """La etiqueta del turno. Esta llamada no ve ninguna cifra."""
     started = time.monotonic()
     disparo, patron = prefilter.revisar(request.message)
+    if not disparo and request.mode is ConversationMode.SUPPORT:
+        # Ya esta en APOYO: el texto de crisis le pregunto si esta a salvo y
+        # este mensaje responde a eso. El umbral de ahi es mas bajo, y es una
+        # regla de estado, asi que no puede vivir en el prompt.
+        disparo, patron = prefilter.revisar_en_apoyo(request.message)
     if disparo:
         # Capa 1: la crisis explicita no pasa por el modelo.
         obs.registrar_clasificacion(
@@ -182,9 +188,16 @@ def redactar(request: WriteRequest, call=call_model, log_path=None) -> AgentRepl
 
     # Capa 3: estos textos no pasan por el modelo. Antes se llamaba igual y la
     # prosa se descartaba despues: una llamada entera por nada.
-    if etiqueta == Intent.DISTRESS and modo == ConversationMode.SUPPORT:
-        # Ya estaba en APOYO: esto responde a "¿estas a salvo?", no es una
-        # primera deteccion. Repetir el texto de entrada rompe AB7.
+    if etiqueta == Intent.DISTRESS and LIMIT_CRISIS_LINE in request.already_stated_limits:
+        # Las lineas ya salieron en un turno anterior: esto responde a "¿estas
+        # a salvo?", no es una primera deteccion. Repetir el texto de entrada
+        # completo le dice el mismo limite dos veces (AB7).
+        #
+        # La condicion era `modo == APOYO`, y con el orden nuevo del turno el
+        # modo que llega aca es el FINAL: una crisis siempre lo pone en APOYO,
+        # asi que el texto de entrada --el unico que pregunta si esta a salvo--
+        # quedo inalcanzable. Medido el 24 oct en C10 (a). Lo que distingue los
+        # dos casos no es el modo sino si las lineas ya se dijeron.
         return _fijo(TEXTOS_FIJOS["angustia_fuerte_en_apoyo"],
                      "texto_fijo_angustia_fuerte_en_apoyo", request, log_path)
     if etiqueta in ETIQUETAS_TEXTO_FIJO:
@@ -199,6 +212,9 @@ def redactar(request: WriteRequest, call=call_model, log_path=None) -> AgentRepl
 
     datos = _datos(request)
     calculos = _calculos(request)
+    # La misma condicion con la que se inyecta MOVIMIENTO_ACLARAR: si la
+    # instruccion pide la salida escrita, el validador no puede rechazarla.
+    aclara_ruta = bool(request.can_clarify_route and etiqueta == Intent.AMBIGUOUS)
     movimientos = prompts.movimientos_para(
         modo,
         clasificacion=request.classification,
@@ -208,6 +224,7 @@ def redactar(request: WriteRequest, call=call_model, log_path=None) -> AgentRepl
         limites=request.already_stated_limits,
         escalon_maximo=(request.max_mode_reached or ConversationMode.GREETING).value,
         pidio_calculo_cuota=request.requested_installment_calculation,
+        calculo_ya_mostrado=request.installment_calc_shown,
         datos=datos,
         calculos=calculos,
     )
@@ -220,11 +237,13 @@ def redactar(request: WriteRequest, call=call_model, log_path=None) -> AgentRepl
                                restante=_restante(started))
     except IntegrationError as exc:
         logger.warning("sin redaccion (%s); va el texto de respaldo", exc)
-        estado = {"modo": modo, "puedes_ofrecer_continuar": request.can_offer_continue}
+        estado = {"modo": modo, "puedes_ofrecer_continuar": request.can_offer_continue,
+                  "puedes_aclarar_ruta": aclara_ruta}
         resultado = validators.respaldo_sin_modelo(estado, "sin_salida_del_modelo")
         return _fijo(resultado.enviado, "sin_salida_del_modelo", request, log_path)
 
-    estado = {"modo": modo, "puedes_ofrecer_continuar": request.can_offer_continue}
+    estado = {"modo": modo, "puedes_ofrecer_continuar": request.can_offer_continue,
+              "puedes_aclarar_ruta": aclara_ruta}
     resultado = validators.validar(
         {"etiqueta": etiqueta, "mensaje": (crudo or {}).get("mensaje")},
         estado, datos, calculos or None,

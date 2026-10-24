@@ -16,7 +16,12 @@ AB3 y AB4 no necesitan código: Contigo no escribe primero y no hay nada
 fuera del webhook. Si alguna vez se agrega el recontacto (P1), vuelven acá.
 """
 
-from app.modules.agent.interface import ConversationEvent, ConversationMode, Intent
+from app.modules.agent.interface import (
+    LIMIT_CRISIS_LINE,
+    ConversationEvent,
+    ConversationMode,
+    Intent,
+)
 
 # La Escalera: el recorrido que sube de a un dato por vez. E4 no está porque
 # no se llega por avance, requiere que ella nombre un monto.
@@ -40,7 +45,7 @@ MODOS_CON_OFERTA = (
     ConversationMode.MINIMUM_BREAKDOWN,
 )
 
-LIMITE_LINEA_CRISIS = "linea_crisis"
+LIMITE_LINEA_CRISIS = LIMIT_CRISIS_LINE
 
 # Acuses sin contenido: se responden una vez (AB8).
 # Solo cortesia. "si", "ya", "dale", "bueno" y "listo" NO estan: en esta

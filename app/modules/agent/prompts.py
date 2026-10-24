@@ -112,6 +112,20 @@ MOVIMIENTOS = {
     ],
 }
 
+# Un escalon de la Escalera sin ningun dato: ella reacciono a lo que vio
+# ("mas alto de lo que pensaba") o no supo que hacer ("no se"). Los
+# movimientos del escalon ordenan contarle sus cifras, y con el bloque de
+# datos vacio esa orden es imposible de cumplir: medido el 24 oct, el modelo
+# repetia las tres cifras que ella acababa de ver --327 tokens, 8,2 s y
+# timeout 2 de 3 veces-- o el validador le rechazaba la respuesta. Un
+# movimiento que contradice los datos es el mismo bug que este archivo
+# existe para no tener.
+MOVIMIENTOS_SIN_DATOS = [
+    "Acusar recibo de lo que ella dijo, en una frase, con sus palabras.",
+    "No repitas ninguna cifra: ella acaba de verlas.",
+    "No la felicites, no le pongas 'logro' y no la apures.",
+]
+
 # E4 sin monto: el backend solo entra a E4 cuando ella nombro un monto, asi
 # que esto cubre el caso en que el calculo no se pudo hacer.
 MOVIMIENTO_E4_SIN_MONTO = (
@@ -142,6 +156,17 @@ MOVIMIENTOS_CUOTA_CALCULADA = [
     "NO volver a ofrecer las dos opciones: ella ya eligio y ya dio el monto.",
     "No le digas que no compre ni la hagas sentir mal. La decision es suya.",
 ]
+# El calculo ya salio y este turno no trae ninguna compra nueva: ella esta
+# decidiendo, o ya decidio. Sin esta rama caia en MOVIMIENTOS_PEDIR_MONTO_CUOTAS
+# y le pedia el monto que acababa de dar: medido el 24 oct, "igual la voy a
+# comprar" contestaba "¿cual es el monto y en cuantas cuotas?". C05 turno 4
+# pide respetar la decision, sin juicio.
+MOVIMIENTOS_COMPRA_DECIDIDA = [
+    "Reconocer lo que dijo en una frase. La decision es suya.",
+    "NO le pidas el monto ni las cuotas: ya te los dio.",
+    "No repitas ninguna cifra, no insistas y no le digas que no compre.",
+]
+
 # Eligio la opcion 2 pero todavia no dijo el monto (C05 turno 2).
 MOVIMIENTOS_PEDIR_MONTO_CUOTAS = [
     "Preguntarle una sola vez el monto y en cuantas cuotas.",
@@ -225,6 +250,7 @@ def movimientos_para(
     limites=(),
     escalon_maximo=None,
     pidio_calculo_cuota=False,
+    calculo_ya_mostrado=False,
     datos=None,
     calculos=None,
 ):
@@ -249,6 +275,8 @@ def movimientos_para(
     elif modo == "PAUSA_COMPRA":
         if _tiene_valor(datos, "minimo_con_cuota"):
             movimientos = list(MOVIMIENTOS_CUOTA_CALCULADA)
+        elif calculo_ya_mostrado:
+            movimientos = list(MOVIMIENTOS_COMPRA_DECIDIDA)
         elif pidio_calculo_cuota:
             movimientos = list(MOVIMIENTOS_PEDIR_MONTO_CUOTAS)
         elif esencial:
@@ -257,6 +285,8 @@ def movimientos_para(
             movimientos = list(MOVIMIENTOS_COMPRA_NO_ESENCIAL)
     elif modo == "E4" and not _tiene_valor(datos, "monto_elegido"):
         movimientos = [MOVIMIENTO_E4_SIN_MONTO]
+    elif modo in MODOS_CON_OFERTA and not datos:
+        movimientos = list(MOVIMIENTOS_SIN_DATOS)
     else:
         movimientos = list(MOVIMIENTOS[modo])
 
@@ -321,12 +351,21 @@ def _tiene_valor(datos, campo):
 
 
 def _formatear_valor(campo):
+    """La cifra, y su estado solo cuando no es el normal.
+
+    Una cifra confirmada iba anotada "(confirmado)", y la palabra aparecia
+    tantas veces como campos tuviera el turno: medido el 24 oct, el modelo le
+    escribio a Patricia "Tu pago minimo confirmado es $74.350". El estado
+    importa cuando NO es confirmado; ahi la anotacion se queda.
+    """
     valor = campo.get("valor")
     estado = campo.get("estado", "confirmado")
     if estado == "ausente" or valor is None:
         return "(ausente)"
     if isinstance(valor, list):
         return " / ".join(_monto(v) for v in valor) + "  (no confiable)"
+    if estado == "confirmado":
+        return _monto(valor)
     return f"{_monto(valor)}  ({estado})"
 
 
