@@ -89,6 +89,10 @@ class ConversationState(BaseModel):
     # y en cuántas cuotas?" con la cifra ya entregada el turno anterior.
     installment_calc_shown: bool = False
 
+    # Nota de voz con un monto: la transcripción espera un "sí" antes de simular
+    # (un monto dicho se puede oír mal). Vale solo para el turno siguiente.
+    pending_voice_text: str | None = None
+
     # T07: el último estado de cuenta en PDF que ella envió.
     statement: StoredStatement | None = None
 

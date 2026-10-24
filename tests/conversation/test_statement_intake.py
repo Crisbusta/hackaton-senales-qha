@@ -1,6 +1,7 @@
 """T07: recibir el PDF por WhatsApp, guardarlo y conciliarlo con el banco."""
 
 import asyncio
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ from app.shared.exceptions import IntegrationError
 
 FIXTURES = Path(__file__).parents[1] / "statements" / "fixtures"
 OCTOBER_PDF = (FIXTURES / "2026-10_estado_de_cuenta_ficticio.pdf").read_bytes()
+AUGUST_PDF = (FIXTURES / "2026-08_estado_de_cuenta_ficticio.pdf").read_bytes()
 USER_ID = "+56912345678"
 MEDIA_URL = "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/ME1"
 
@@ -199,8 +201,9 @@ def test_merge_marks_disagreements_as_unreliable_with_both_values() -> None:
     )
 
     assert merged["minimo"] == FinancialField(value=[47350, 74350], status=FieldStatus.UNRELIABLE)
-    assert merged["vencimiento"].status is FieldStatus.UNRELIABLE
-    assert merged["vencimiento"].value is None
+    assert merged["vencimiento"] == FinancialField(
+        value="5 de noviembre de 2026 / 3 de noviembre de 2026", status=FieldStatus.UNRELIABLE
+    )
 
 
 def test_merge_uses_the_bank_when_the_document_lacks_a_value() -> None:
@@ -258,3 +261,43 @@ def test_una_cifra_en_conflicto_no_la_usa_el_simulador() -> None:
         fields={"minimo": FinancialField(value=[80000, 74350], status=FieldStatus.UNRELIABLE)}
     )
     assert _cifra_del_estado_de_cuenta(state, "minimo") is None
+
+
+# --- Períodos distintos (bug visto en producción: PDF de septiembre + banco de octubre) ---
+
+
+def test_an_older_statement_does_not_override_current_bank_data() -> None:
+    agent, repo, service = setup(fetcher=FakeFetcher(AUGUST_PDF), bank=MockBankProvider("patricia"))
+
+    reply = send(service, content_type="application/pdf", sid="SM1")
+    # Dos preguntas: cada una sube un escalon, y el minimo solo viaja en E2.
+    # Antes bastaba una porque la precarga mandaba toda la Escalera en cada
+    # turno; ahora el turno recibe exactamente los campos de su modo.
+    send(service, body="¿cuándo vence?", sid="SM2")
+    send(service, body="¿y el mínimo?", sid="SM3")
+
+    assert reply == statement_intake.RECEIVED_OLDER_REPLY.format(mes="agosto", mes_actual="octubre")
+    en_e1 = agent.requests[0].financial_data
+    assert en_e1["vencimiento"] == field("3 de noviembre de 2026")  # el del banco, vigente
+    en_e2 = agent.requests[1].financial_data
+    assert en_e2["minimo"] == field(74350)
+    assert all(f.status is FieldStatus.CONFIRMED for f in (en_e1 | en_e2).values())
+    assert state_of(repo).timeline[0].intent == "pdf_ok_older_than_bank"  # el turno del PDF
+
+
+def test_a_newer_statement_replaces_the_bank() -> None:
+    newer = StoredStatement(fields={"minimo": field(80000)}, period_end=date(2026, 11, 15))
+
+    merged = statement_intake.merge_sources(
+        {"minimo": field(74350), "saldo": field(1064000)}, newer, date(2026, 10, 15)
+    )
+
+    assert merged == {"minimo": field(80000)}
+
+
+def test_same_period_is_compared_field_by_field() -> None:
+    same = StoredStatement(fields={"minimo": field(47350)}, period_end=date(2026, 10, 15))
+
+    merged = statement_intake.merge_sources({"minimo": field(74350)}, same, date(2026, 10, 15))
+
+    assert merged["minimo"] == FinancialField(value=[47350, 74350], status=FieldStatus.UNRELIABLE)

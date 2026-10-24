@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -11,10 +12,17 @@ from app.modules.banking.provider import build_bank_provider
 from app.modules.conversation.repository import build_repository
 from app.modules.conversation.service import ConversationService
 from app.modules.dashboard.router import router as dashboard_router
+from app.modules.voice.transcriber import build_transcriber
 from app.modules.whatsapp.media import build_media_fetcher
+from app.modules.whatsapp.outbound import build_dispatcher
 from app.modules.whatsapp.router import router as whatsapp_router
 
 logger = logging.getLogger(__name__)
+
+
+def _log_warm_up_failure(task: asyncio.Task) -> None:
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Voice model failed to load: %s", type(task.exception()).__name__)
 
 
 def create_app() -> FastAPI:
@@ -28,6 +36,8 @@ def create_app() -> FastAPI:
     # por instancia de app, compartido por el servicio y el dashboard (en
     # memoria si no hay DATABASE_URL: se pierde al reiniciar).
     repository = build_repository(settings)
+    # Notas de voz (None = apagadas: un audio sigue el flujo normal).
+    transcriber = build_transcriber(settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -35,6 +45,12 @@ def create_app() -> FastAPI:
         open_ = getattr(repository, "open", None)
         if open_ is not None:
             await open_()
+        # El modelo de voz se carga en segundo plano: /health responde de inmediato
+        # y el primer audio no paga la carga dentro de su timeout.
+        warm_up = None
+        if transcriber is not None:
+            warm_up = asyncio.create_task(asyncio.to_thread(transcriber.warm_up))
+            warm_up.add_done_callback(_log_warm_up_failure)
         try:
             yield
         finally:
@@ -52,7 +68,12 @@ def create_app() -> FastAPI:
         bank=build_bank_provider(settings),
         demo_admins=settings.demo_admins,
         media_fetcher=build_media_fetcher(settings),
+        transcriber=transcriber,
+        voice_timeout_s=settings.voice_timeout_s,
     )
+
+    app.state.reply_dispatcher = build_dispatcher(settings, app.state.message_handler)
+    logger.info("Reply mode: %s", settings.reply_mode)
 
     @app.get("/health", tags=["health"])
     async def health() -> dict[str, str]:

@@ -25,12 +25,20 @@ class Settings(BaseSettings):
     # Presupuesto total por turno del agente. Twilio espera ~15 s la respuesta
     # TwiML; se deja margen para el resto del procesamiento.
     #
-    # Son DOS llamadas por turno (clasificar y redactar), cada una con su
-    # reserva: el peor caso del turno es la suma (5 + 7 = 12 s) y tiene que
-    # caber aqui menos el margen. Quedan ~2 s de holgura contra la ventana de
-    # Twilio, y despues de eso solo falta armar el TwiML.
-    # Medido contra el proveedor real: 2,0-6,6 s por llamada, 5-9 s el turno.
+    # Son DOS llamadas por turno (clasificar y redactar). La clasificacion
+    # tiene reserva fija (`openai_classify_timeout_s`) y la redaccion techo
+    # acotado por lo que quede, asi que el peor caso del turno es el
+    # presupuesto completo: 13 - 1 de margen = 12 s, y quedan ~3 s de holgura
+    # contra la ventana de Twilio. El validador de abajo exige que la reserva
+    # de clasificar mas MIN_REDACCION_S quepan aqui.
+    # Medido el 24 oct contra el proveedor real: clasificar 1,6-4,1 s,
+    # redactar 1,6-6,5 s, 10,7 s el peor turno punta a punta.
     agent_timeout_s: float = 13.0
+    # Cómo se responde: "twiml" (dentro del webhook, límite ~15 s de Twilio) o "async"
+    # (webhook inmediato + respuesta por la API REST; permite AGENT_TIMEOUT_S de ~25-30 s).
+    # Con "async" desaparece el techo de los 15 s y los plazos de arriba pueden
+    # subir; los valores por defecto son los que caben en "twiml".
+    reply_mode: Literal["twiml", "async"] = "twiml"
 
     # Escenario ficticio del banco simulado (app/modules/banking/fixtures/<nombre>.json).
     # Vacío: ningún usuario tiene banco vinculado.
@@ -100,6 +108,21 @@ class Settings(BaseSettings):
     # apagada: se enciende en local, con datos de demo.
     agent_trace_enabled: bool = False
     agent_trace_path: str = "turnos.jsonl"
+
+    # Notas de voz: transcripción local con faster-whisper (el audio no sale del
+    # servidor). Apagadas por defecto en el código: sin el modelo en disco, el
+    # primer audio lo bajaría de Hugging Face. La imagen Docker trae el modelo y
+    # las enciende (VOICE_ENABLED=true, VOICE_MODEL_DIR=/app/models/...).
+    voice_enabled: bool = False
+    voice_model: str = "small"
+    # Carpeta del modelo ya descargado. Con valor, nunca se consulta Hugging Face.
+    voice_model_dir: str = ""
+    voice_max_seconds: float = 60.0
+    # Descarga + transcripción. Holgado: la respuesta irá fuera de banda (~30 s);
+    # con la respuesta TwiML síncrona Twilio corta a ~15 s.
+    voice_timeout_s: float = 20.0
+    # Hilos de CPU para Whisper (0 = los que decida CTranslate2).
+    voice_cpu_threads: int = 0
 
     # Twilio (se usan desde feat/twilio-webhook).
     twilio_auth_token: str = ""

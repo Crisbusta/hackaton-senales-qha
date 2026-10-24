@@ -4,14 +4,17 @@ Cuando ella envía un PDF: se descarga, se lee y se valida, y se responde con un
 texto fijo SIN cifras (exposición progresiva: las cifras llegan por la Escalera,
 cuando ella las pide). No se llama al agente: es más rápido y predecible.
 
-Conciliación: el PDF es lo que ella envió, así que manda. Si el banco dice otra
-cosa, el dato queda UNRELIABLE con ambos valores (el agente dice que aparecen dos).
-Si el PDF no trae un dato y el banco sí, se usa el del banco.
+Conciliación (solo entre estados del mismo período; ver `merge_sources`): el PDF
+es lo que ella envió, así que manda. Si el banco dice otra cosa, el dato queda
+UNRELIABLE con ambos valores (el agente dice que aparecen dos). Si el PDF no trae
+un dato y el banco sí, se usa el del banco. Un PDF más antiguo que el banco no
+pisa los datos actuales.
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import date
 
 from app.modules.agent.interface import FieldStatus, FinancialField
 from app.modules.banking.service import format_date_es
@@ -37,6 +40,10 @@ RECEIVED_WITH_ISSUES_REPLY = (
     "Recibí tu estado de cuenta de {mes}. Algunos datos no se leen con claridad; "
     "te voy a contar solo los que puedo confirmar."
 )
+RECEIVED_OLDER_REPLY = (
+    "Recibí tu estado de cuenta de {mes}. Ya tengo uno más reciente, el de {mes_actual}; "
+    "si te parece, partimos por ese."
+)
 UNREADABLE_REPLY = (
     "No pude leer ese archivo. ¿Me lo puedes enviar de nuevo? "
     "Tiene que ser el PDF de tu estado de cuenta."
@@ -59,7 +66,13 @@ def pdf_attachment(message: IncomingMessage):
     return None
 
 
-async def receive_statement(fetcher: MediaFetcher, url: str, ctx: str) -> IntakeResult:
+def _month_es(value: date) -> str:
+    return format_date_es(value).split(" de ")[1]
+
+
+async def receive_statement(
+    fetcher: MediaFetcher, url: str, ctx: str, bank_period_end: date | None = None
+) -> IntakeResult:
     try:
         pdf = await asyncio.wait_for(fetcher.fetch(url, MAX_PDF_BYTES), DOWNLOAD_TIMEOUT_S)
     except (TimeoutError, IntegrationError) as exc:
@@ -88,7 +101,7 @@ async def receive_statement(fetcher: MediaFetcher, url: str, ctx: str) -> Intake
         issues=issues,
     )
     reference = parsed.period_end or parsed.statement_date
-    month = format_date_es(reference).split(" de ")[1] if reference else "este mes"
+    month = _month_es(reference) if reference else "este mes"
     unclear = issues or len(confirmed) < len(parsed.fields)
     logger.info(
         "Statement received %s fields=%d confirmed=%d issues=%s",
@@ -97,6 +110,9 @@ async def receive_statement(fetcher: MediaFetcher, url: str, ctx: str) -> Intake
         len(confirmed),
         ",".join(issues) or "-",
     )
+    if parsed.period_end and bank_period_end and parsed.period_end < bank_period_end:
+        reply = RECEIVED_OLDER_REPLY.format(mes=month, mes_actual=_month_es(bank_period_end))
+        return IntakeResult(reply, statement, "ok_older_than_bank")
     template = RECEIVED_WITH_ISSUES_REPLY if unclear else RECEIVED_REPLY
     return IntakeResult(
         template.format(mes=month), statement, "ok_with_issues" if unclear else "ok"
@@ -104,11 +120,25 @@ async def receive_statement(fetcher: MediaFetcher, url: str, ctx: str) -> Intake
 
 
 def merge_sources(
-    bank: dict[str, FinancialField], statement: StoredStatement | None
+    bank: dict[str, FinancialField],
+    statement: StoredStatement | None,
+    bank_period_end: date | None = None,
 ) -> dict[str, FinancialField]:
-    """Une el estado de cuenta (manda) con el banco. Ver docstring del módulo."""
+    """Une el estado de cuenta con el banco. Solo se comparan estados del MISMO período.
+
+    - PDF más antiguo que el banco: es historia; manda el banco (más actual).
+    - PDF más nuevo que el banco: manda el PDF; lo que no traiga queda como en el PDF.
+    - Mismo período (o fechas desconocidas): el PDF manda; si difiere del banco el dato
+      queda UNRELIABLE con ambos valores; si al PDF le falta un dato, se usa el del banco.
+    """
     if statement is None:
         return dict(bank)
+    period = statement.period_end
+    if period and bank_period_end and bank:
+        if period < bank_period_end:
+            return dict(bank)
+        if period > bank_period_end:
+            return dict(statement.fields)
     merged = dict(bank)
     for key, doc in statement.fields.items():
         other = bank.get(key)
@@ -122,11 +152,17 @@ def merge_sources(
             and other.status is FieldStatus.CONFIRMED
             and other.value != doc.value
         ):
-            both_ints = isinstance(doc.value, int) and isinstance(other.value, int)
-            merged[key] = FinancialField(
-                value=[doc.value, other.value] if both_ints else None,
-                status=FieldStatus.UNRELIABLE,
-            )
+            merged[key] = _conflict(doc.value, other.value)
             continue
         merged[key] = doc
     return merged
+
+
+def _conflict(document_value, bank_value) -> FinancialField:
+    """Dos valores para el mismo dato. Los montos van como lista; los textos, unidos con " / "
+    (un valor vacío haría que el agente diga que el dato no existe)."""
+    if isinstance(document_value, int) and isinstance(bank_value, int):
+        value = [document_value, bank_value]
+    else:
+        value = f"{document_value} / {bank_value}"
+    return FinancialField(value=value, status=FieldStatus.UNRELIABLE)

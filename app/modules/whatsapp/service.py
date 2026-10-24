@@ -40,6 +40,7 @@ def parse_incoming(params: Mapping[str, str]) -> IncomingMessage:
         return IncomingMessage(
             message_sid=params.get("MessageSid", ""),
             from_number=params.get("From", ""),
+            to_number=params.get("To", ""),
             body=params.get("Body", "").strip(),
             num_media=num_media,
             media=media,

@@ -50,9 +50,11 @@ from app.modules.conversation import (
     simulation,
     statement_intake,
     transitions,
+    voice_intake,
 )
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.conversation.schemas import ConversationState, RecordedEvent, utc_now
+from app.modules.voice.transcriber import Transcriber
 from app.modules.whatsapp.media import MediaFetcher
 from app.modules.whatsapp.schemas import IncomingMessage
 from app.shared.exceptions import IntegrationError
@@ -198,6 +200,8 @@ class ConversationService:
         demo_admins: frozenset[str] = frozenset(),
         media_fetcher: MediaFetcher | None = None,
         classify_timeout_s: float | None = None,
+        transcriber: Transcriber | None = None,
+        voice_timeout_s: float = 20.0,
     ) -> None:
         self._agent = agent
         self._repository = repository
@@ -210,6 +214,9 @@ class ConversationService:
         self._bank = bank
         self._demo_admins = demo_admins
         self._media_fetcher = media_fetcher
+        # Sin transcriptor, un audio sigue el flujo normal (cuerpo vacío).
+        self._transcriber = transcriber
+        self._voice_timeout_s = voice_timeout_s
 
     async def _snapshot(self, state: ConversationState, ctx: str) -> BankSnapshot | None:
         """Datos del banco para este turno, o None si no corresponde usarlos.
@@ -257,7 +264,12 @@ class ConversationService:
             if snapshot and snapshot.credit_cards
             else {}
         )
-        available = statement_intake.merge_sources(bank, state.statement) | simulated
+        bank_period = (
+            snapshot.credit_cards[0].statement.period_end
+            if snapshot and snapshot.credit_cards
+            else None
+        )
+        available = statement_intake.merge_sources(bank, state.statement, bank_period) | simulated
         if not available:
             return {}
         sent = fields_for_mode(state.mode, intent, state.installment_calc_requested)
@@ -267,19 +279,91 @@ class ConversationService:
         self, state: ConversationState, message: IncomingMessage, url: str, ctx: str
     ) -> str:
         assert self._media_fetcher is not None
-        result = await statement_intake.receive_statement(self._media_fetcher, url, ctx)
+        snapshot = await self._snapshot(state, ctx)
+        bank_period = (
+            snapshot.credit_cards[0].statement.period_end
+            if snapshot and snapshot.credit_cards
+            else None
+        )
+        result = await statement_intake.receive_statement(
+            self._media_fetcher, url, ctx, bank_period
+        )
         if result.statement is not None:
             state.statement = result.statement
+        reached = [progress.SHARED_STATEMENT] if result.statement is not None else []
+        return await self._reply_without_agent(
+            state,
+            "(envió su estado de cuenta en PDF)",
+            result.reply,
+            f"pdf_{result.outcome}",
+            reached,
+        )
+
+    async def _reply_without_agent(
+        self,
+        state: ConversationState,
+        user_text: str,
+        reply: str,
+        intent: str,
+        milestones: list[progress.Milestone] | None = None,
+        pending_voice_text: str | None = None,
+    ) -> str:
+        """Turno que resuelve el backend con un texto fijo (PDF, audio fallido, confirmación)."""
+        state.pending_voice_text = pending_voice_text
         state.history += [
-            ConversationMessage(role="user", content="(envió su estado de cuenta en PDF)"),
-            ConversationMessage(role="assistant", content=result.reply),
+            ConversationMessage(role="user", content=user_text),
+            ConversationMessage(role="assistant", content=reply),
         ]
         state.turn_count += 1
-        reached = [progress.SHARED_STATEMENT] if result.statement is not None else []
-        progress.record_system_turn(state, f"pdf_{result.outcome}", reached)
+        progress.record_system_turn(state, intent, milestones or [])
         state.updated_at = utc_now()
         await self._repository.save(state)
-        return result.reply
+        return reply
+
+    async def _voice_turn(
+        self, state: ConversationState, message: IncomingMessage, ctx: str
+    ) -> tuple[IncomingMessage, str] | str:
+        """Nota de voz → (mensaje con la transcripción, texto para el historial), o la
+        respuesta fija si no se pudo escuchar o si hay que confirmar un monto.
+
+        Sin audio, el mensaje sigue igual; solo se resuelve una confirmación pendiente.
+        """
+        history_text = message.body
+        from_voice = False
+        audio = voice_intake.audio_attachment(message)
+        if (
+            audio is not None
+            and not message.body.strip()
+            and self._transcriber is not None
+            and self._media_fetcher is not None
+        ):
+            result = await voice_intake.transcribe_note(
+                self._media_fetcher, self._transcriber, audio.url, self._voice_timeout_s, ctx
+            )
+            if result.text is None:
+                return await self._reply_without_agent(
+                    state, voice_intake.UNHEARD_HISTORY, result.reply, f"voice_{result.outcome}"
+                )
+            from_voice = True
+            history_text = voice_intake.history_entry(result.text)
+            message = message.model_copy(update={"body": result.text})
+
+        confirmed = voice_intake.take_confirmation(state, message.body)
+        if confirmed is not None:
+            logger.info("Voice amount confirmed %s", ctx)
+            return message.model_copy(update={"body": confirmed}), history_text
+        if from_voice:
+            question = voice_intake.confirmation_question(state, message.body)
+            if question is not None:
+                logger.info("Voice amount needs confirmation %s", ctx)
+                return await self._reply_without_agent(
+                    state,
+                    history_text,
+                    question,
+                    "voice_confirm_amount",
+                    pending_voice_text=message.body,
+                )
+        return message, history_text
 
     async def _classify(self, request: ClassifyRequest, timeout_s: float) -> Classification:
         try:
@@ -342,6 +426,13 @@ class ConversationService:
         attachment = statement_intake.pdf_attachment(message)
         if attachment is not None and self._media_fetcher is not None:
             return await self._receive_statement(state, message, attachment.url, ctx)
+
+        # Nota de voz: se transcribe en el servidor y el turno sigue con el texto.
+        # Un monto dicho por voz se confirma antes de simular.
+        voice = await self._voice_turn(state, message, ctx)
+        if isinstance(voice, str):
+            return voice
+        message, history_text = voice
 
         # AB8: a un acuse vacío se responde una vez; el siguiente no recibe
         # respuesta. Ahorra las dos llamadas al modelo y evita el bucle de cortesía.
@@ -466,7 +557,7 @@ class ConversationService:
             reply = STEP_BY_STEP_REPLY
 
         state.history += [
-            ConversationMessage(role="user", content=message.body),
+            ConversationMessage(role="user", content=history_text),
             ConversationMessage(role="assistant", content=reply),
         ]
         self._record_anti_loop(state, classification, reply)

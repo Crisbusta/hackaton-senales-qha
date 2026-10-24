@@ -5,7 +5,10 @@ description = "Contigo — Tus finanzas, a tu ritmo. Asistente financiero conver
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "av>=19.0.2",
     "fastapi>=0.161.1",
+    "faster-whisper>=1.2.1",
+    "numpy>=2.5.4",
     "openai>=3.37.0",
     "psycopg[binary,pool]>=3.3.6",
     "pydantic-settings>=2.16.1",
