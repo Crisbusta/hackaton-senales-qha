@@ -18,7 +18,18 @@ Contigo es un acompañante por WhatsApp. No empuja a pagar: va al ritmo de la pe
 
 ## Qué dejamos fuera a propósito
 
-Audios, conexión bancaria real, asesoría financiera, diagnóstico emocional y recordatorios de deuda.
+Conexión bancaria real, asesoría financiera, diagnóstico emocional y recordatorios de deuda.
+
+## Notas de voz
+
+Si ella manda un audio, Contigo lo transcribe **en el mismo servidor** (faster-whisper, modelo
+`small`, sin APIs pagadas: el audio no sale de ahí) y responde como si lo hubiera escrito. Si no
+se entiende, pide que lo escriba. Si en el audio dice un monto para simular ("¿y si pago 100
+mil?"), primero confirma: "¿Quieres que pruebe con $100.000?".
+
+- La imagen Docker trae el modelo y viene con `VOICE_ENABLED=true`.
+- En local: `VOICE_ENABLED=true` en `.env` (la primera vez baja el modelo, ~480 MB).
+- Audios de más de 60 s (`VOICE_MAX_SECONDS`) o 5 MB no se transcriben.
 
 ## Pruebas manuales
 
