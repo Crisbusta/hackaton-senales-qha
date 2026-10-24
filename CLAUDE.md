@@ -71,6 +71,10 @@ ConversationService.handle()            conversation/service.py
  11. si pidió no ver cifras y hay un monto → NO_FIGURES_REPLY (salvo protected_text)
  12. progress.record_turn() (avances + timeline) → repository.save()
   → TwiML (un error del handler responde 200 con un texto amable, nunca 5xx)
+
+Con REPLY_MODE=async (whatsapp/outbound.py): el webhook responde de inmediato con TwiML vacío,
+el turno corre en segundo plano (BackgroundTasks, un candado por usuario para respetar el orden)
+y la respuesta sale por la API REST de Twilio. Sin el límite de ~15 s del webhook.
 ```
 
 El "turno de atraso" (el modo cambia después de que el agente responde) es la causa raíz de
@@ -127,8 +131,10 @@ diferida), repositorio, banco y servicio en `app.state`.
 ## Configuración clave
 
 `app/core/config.py` (pydantic-settings, lee `.env`). Las que importan para entender el sistema:
-`APP_ENV`, `AGENT_IMPL` (`mock`|`llm`), `AGENT_TIMEOUT_S` (12; el presupuesto interno del agente
-es `AGENT_TIMEOUT_S − agent_budget_margin_s`; Twilio corta a ~15 s), `OPENAI_TIMEOUT_S` (9),
+`APP_ENV`, `AGENT_IMPL` (`mock`|`llm`), `REPLY_MODE` (`twiml`: responde dentro del webhook, que
+Twilio corta a ~15 s | `async`: responde por la API REST), `AGENT_TIMEOUT_S` (12 con `twiml`; ~25
+con `async`; el presupuesto interno del agente es `AGENT_TIMEOUT_S − agent_budget_margin_s`),
+`OPENAI_TIMEOUT_S` (9),
 `PUBLIC_BASE_URL` (solo el origen, sin path ni `/` final), `TWILIO_AUTH_TOKEN` (el **primario** de
 Twilio), `TWILIO_ACCOUNT_SID` (para descargar el PDF), `MOCK_BANK_SCENARIO`, `DEMO_ADMIN_NUMBERS`,
 `DASHBOARD_PASSWORD`, `DATABASE_URL` (vacío = en memoria; con valor = PostgreSQL). En Railway los valores
@@ -177,6 +183,9 @@ no coinciden.
   como lista, textos unidos con " / "), y si le falta un dato se usa el del banco. El simulador (T10) todavía usa solo el banco. Los pasos con PDF del runner se omiten.
 - **Salir de una pausa pidiendo un dato** (no con "hola") todavía responde con el texto de pausa
   en ese turno (solo la retoma hacia E0 se re-pregunta).
+- **Respuestas fuera de banda (`REPLY_MODE=async`)**: si el proceso se reinicia (deploy) mientras
+  un turno corre en segundo plano, esa respuesta se pierde; el candado por usuario es por proceso
+  (sirve con 1 réplica).
 - **Detección de T10 por reglas**: solo con montos explícitos ("100 mil", "$100.000", "80 lucas").
 - **`faltante_para_gastos_esenciales`**: el texto lo define C; el agente no debe mencionarlo hasta
   que esté validado.

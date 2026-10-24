@@ -81,6 +81,16 @@ solicitudes serán rechazadas con `403`.
 - `TWILIO_VALIDATE_SIGNATURE=false` permite probar con `curl` en local; la app no arranca
   si se combina con `APP_ENV=production`.
 
+### Modo de respuesta (`REPLY_MODE`)
+
+- `twiml` (por defecto): la respuesta va en el TwiML del mismo webhook. Twilio espera como máximo
+  ~15 s, así que el turno completo tiene que caber ahí (`AGENT_TIMEOUT_S=12`).
+- `async`: el webhook responde al instante con un TwiML vacío, el turno se procesa en segundo
+  plano y la respuesta se envía con la API REST de Twilio (requiere `TWILIO_ACCOUNT_SID`). Permite
+  turnos más largos (`AGENT_TIMEOUT_S≈25`), útil para audios o para que entre el reintento del
+  agente. Los mensajes de un mismo usuario se procesan en orden. Para volver al modo anterior basta
+  con `REPLY_MODE=twiml`.
+
 ### Respuestas de error
 
 | Caso | Respuesta |
@@ -292,6 +302,7 @@ réplicas cada mensaje podría caer en una distinta.
 | `APP_ENV` | `production` (obliga a validar la firma y apaga la traza del agente) |
 | `PUBLIC_BASE_URL` | `https://<servicio>.up.railway.app`, sin slash final |
 | `TWILIO_AUTH_TOKEN` | 🔒 Auth Token de Twilio |
+| `REPLY_MODE` | `twiml` (por defecto) o `async` (respuesta por la API REST; usar con `AGENT_TIMEOUT_S=25`) |
 | `TWILIO_ACCOUNT_SID` | Account SID de Twilio (empieza con `AC`), para descargar el PDF que envía el usuario |
 | `AGENT_IMPL` | `llm` (o `mock` para probar sin costo) |
 | `OPENAI_API_KEY` | 🔒 solo si `AGENT_IMPL=llm` |
