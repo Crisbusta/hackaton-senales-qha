@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # Presupuesto total por turno del agente. Twilio espera ~15 s la respuesta
     # TwiML; se deja margen para el resto del procesamiento.
     agent_timeout_s: float = 12.0
+    # Cómo se responde: "twiml" (dentro del webhook, límite ~15 s de Twilio) o "async"
+    # (webhook inmediato + respuesta por la API REST; permite AGENT_TIMEOUT_S de ~25-30 s).
+    reply_mode: Literal["twiml", "async"] = "twiml"
 
     # Escenario ficticio del banco simulado (app/modules/banking/fixtures/<nombre>.json).
     # Vacío: ningún usuario tiene banco vinculado.

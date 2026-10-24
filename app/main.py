@@ -12,6 +12,7 @@ from app.modules.conversation.repository import build_repository
 from app.modules.conversation.service import ConversationService
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.whatsapp.media import build_media_fetcher
+from app.modules.whatsapp.outbound import build_dispatcher
 from app.modules.whatsapp.router import router as whatsapp_router
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,9 @@ def create_app() -> FastAPI:
         demo_admins=settings.demo_admins,
         media_fetcher=build_media_fetcher(settings),
     )
+
+    app.state.reply_dispatcher = build_dispatcher(settings, app.state.message_handler)
+    logger.info("Reply mode: %s", settings.reply_mode)
 
     @app.get("/health", tags=["health"])
     async def health() -> dict[str, str]:

@@ -12,6 +12,8 @@ class IncomingMessage(BaseModel):
     message_sid: str = Field(min_length=1)
     # Formato Twilio: "whatsapp:+56912345678"
     from_number: str = Field(min_length=1)
+    # Nuestro número (el "To" de Twilio): desde ahí se responde fuera de banda.
+    to_number: str = ""
     body: str = ""
     num_media: int = Field(default=0, ge=0)
     media: list[IncomingMedia] = Field(default_factory=list)
