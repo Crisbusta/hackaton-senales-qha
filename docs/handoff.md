@@ -58,8 +58,8 @@ commit debería responderlo.
 
 ## De qué se trata todo esto
 
-El bot respondía mal en **40 % de los turnos** (medidos sobre 52 reales). Tres diagnósticos
-independientes coincidían en el síntoma —respuestas vagas, "eso lo vemos en un momento",
+El bot respondía mal en **40 % de los turnos** (medidos sobre 52 reales; esos 52 turnos **no
+están en el repo**, ver paso 7). Tres diagnósticos independientes coincidían en el síntoma —respuestas vagas, "eso lo vemos en un momento",
 preguntas en vez de datos— y la causa era una sola: **el prompt negaba datos que ya tenía**.
 
 Debajo de eso había una causa de arquitectura: el turno era **una sola llamada al modelo**, así
@@ -213,7 +213,19 @@ uv run python -m scripts.p0_runner --agent llm --report resultados_despues.md
 ```
 
 Y repetir la clasificación manual de los 52 turnos con la traza encendida, igual que la primera
-vez. Es lo último de la lista, y lo que cierra el trabajo.
+vez.
+
+**Ojo: los 52 turnos del "antes" no están en este repo.** Vienen del diagnóstico que hizo el
+equipo (un PDF, "Respuestas vagas de Contigo", y un HTML, "Diagnóstico de Contigo") que estaban en
+la máquina de quien hizo este trabajo. **Antes de empezar el paso 7, pídeselos al equipo y
+súbelos a `docs/`** — si no, no hay con qué comparar y el paso no se puede hacer.
+
+El criterio de aquella clasificación: un turno cuenta como problemático si posterga un dato que sí
+estaba en el contexto, repite una cifra que ella ya vio, ofrece lo mismo dos veces, o responde con
+una pregunta en vez del dato que pidió. Si vuelves a clasificar, usa el mismo criterio o el número
+no es comparable.
+
+Es lo último de la lista, y lo que cierra el trabajo.
 
 ---
 
