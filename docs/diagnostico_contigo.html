@@ -1,0 +1,205 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Diagnóstico de Contigo</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+/* Layout: una columna de lectura; resumen arriba, hallazgos como fichas con severidad, plan al final */
+:root {
+  --bg: #f6f7f4; --surface: #ffffff; --ink: #1d2622; --muted: #5b6862; --line: #dde3df;
+  --accent: #2f6f5e; --accent-soft: #e3efe9;
+  --hi: #9a3b2f; --hi-soft: #f6e3df; --mid: #8a6a12; --mid-soft: #f6efd9; --lo: #3f5f8a; --lo-soft: #e2e9f4;
+  --display: "Fraunces", Georgia, serif; --body: "Figtree", "Segoe UI", system-ui, sans-serif; --mono: "JetBrains Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141a17; --surface: #1b2420; --ink: #e6ece8; --muted: #9eaca5; --line: #2c3833;
+    --accent: #7cc4ad; --accent-soft: #1f3a31;
+    --hi: #e79a8a; --hi-soft: #3d2420; --mid: #e2c06a; --mid-soft: #3a3220; --lo: #9db8e0; --lo-soft: #1f2a3a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141a17; --surface: #1b2420; --ink: #e6ece8; --muted: #9eaca5; --line: #2c3833;
+  --accent: #7cc4ad; --accent-soft: #1f3a31;
+  --hi: #e79a8a; --hi-soft: #3d2420; --mid: #e2c06a; --mid-soft: #3a3220; --lo: #9db8e0; --lo-soft: #1f2a3a; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; }
+main { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px; }
+header { display: flex; flex-direction: column; gap: 8px; }
+.eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+h1 { font-family: var(--display); font-weight: 650; font-size: clamp(30px, 6vw, 42px); line-height: 1.1; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--display); font-weight: 500; font-size: 24px; margin: 0; text-wrap: balance; }
+h3 { margin: 0; font-size: 17px; line-height: 1.35; }
+p { margin: 0; max-width: 70ch; }
+.lede { color: var(--muted); }
+section { display: flex; flex-direction: column; gap: 14px; }
+.key { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: grid; gap: 10px; }
+.key ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.finding { background: var(--surface); border: 1px solid var(--line); border-left: 5px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 10px; }
+.finding.hi { border-left-color: var(--hi); }
+.finding.mid { border-left-color: var(--mid); }
+.finding.lo { border-left-color: var(--lo); }
+.head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.num { font-family: var(--display); font-size: 22px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.pill { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill.hi { background: var(--hi-soft); color: var(--hi); }
+.pill.mid { background: var(--mid-soft); color: var(--mid); }
+.pill.lo { background: var(--lo-soft); color: var(--lo); }
+.pill.n { background: var(--accent-soft); color: var(--accent); }
+dl { display: grid; grid-template-columns: 140px 1fr; gap: 6px 14px; margin: 0; font-size: 15px; }
+dt { color: var(--muted); font-weight: 600; }
+dd { margin: 0; min-width: 0; }
+code { font-family: var(--mono); font-size: 13px; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.chat { display: grid; gap: 6px; font-size: 14.5px; }
+.chat .u { justify-self: end; background: var(--bg); border: 1px solid var(--line); border-radius: 10px 10px 2px 10px; padding: 5px 10px; }
+.chat .b { justify-self: start; background: var(--accent-soft); border-radius: 10px 10px 10px 2px; padding: 5px 10px; max-width: 90%; }
+.chat .x { justify-self: start; color: var(--hi); font-weight: 600; font-size: 13.5px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; background: var(--accent-soft); }
+tr:last-child td { border-bottom: 0; }
+@media (max-width: 560px) { dl { grid-template-columns: 1fr; } dt { margin-top: 6px; } }
+</style>
+
+<main>
+  <header>
+    <span class="eyebrow">Hackatón Señales · Revisión del código en main (c846fc8, 23 oct 2026)</span>
+    <h1>Diagnóstico de Contigo</h1>
+    <p class="lede">Por qué el agente responde incoherente o se "rompe" por WhatsApp, y por qué no aparece el onboarding. Revisé todo el flujo de un mensaje, archivo por archivo, y simulé conversaciones contra el código. No pude ejecutar los tests en este equipo: donde algo es deducción y no está medido, lo digo.</p>
+  </header>
+
+  <section>
+    <h2>Lo esencial</h2>
+    <div class="key">
+      <ul>
+        <li><b>El modelo no es el problema.</b> Las fallas están en cómo el código arma cada turno: el orden de los pasos, el validador y algunas instrucciones que se contradicen.</li>
+        <li><b>El guion de la demo funciona por casualidad.</b> Cada mensaje del guion acepta y pide a la vez ("Veamos", "Sigamos"), y eso tapa el turno de atraso. Si Patricia escribe distinto ("sí", una pregunta, una emoción), la conversación se desordena.</li>
+        <li><b>El onboarding no existe en el código.</b> Lo probamos solo en el Playground, que es un prompt aparte. No hay ningún archivo, PR ni rama con el onboarding en el repo.</li>
+        <li><b>Hay arreglos chicos para casi todo:</b> unas 2 horas entre A y B para los 5 más graves.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>Hallazgos, del más grave al menos grave</h2>
+
+    <article class="finding hi">
+      <div class="head"><span class="num">1</span><h3>El agente responde con un turno de atraso al subir de escalón</h3><span class="pill hi">Grave</span><span class="pill n">Certeza alta</span></div>
+      <dl>
+        <dt>Qué ve Patricia</dt><dd>Acepta ver un dato y el bot le contesta algo vago; el dato llega recién con su siguiente mensaje, diga lo que diga. A veces repite la fecha dos veces seguidas, o se niega a dar el saldo cuando ella lo pide.</dd>
+        <dt>Por qué pasa</dt><dd><code>conversation/service.py</code> llama al modelo con el modo actual y <b>después</b> cambia de modo (línea 372 y luego 375–376). Las instrucciones de cada escalón (<code>agent/prompts.py</code>, <code>MOVIMIENTOS</code>) dicen "contarle la fecha" en E1 o "no nombres el saldo", sin importar lo que ella acaba de pedir. El re-llamado que corrige esto (<code>REANSWER_ON_ENTRY</code>) solo cubre PAUSA_COMPRA. Además, ese re-llamado manda <code>financial_data</code> vacío, así que tampoco serviría tal cual para los escalones. El propio CLAUDE.md del PR #24 lo describe como la causa raíz.</dd>
+        <dt>Arreglo</dt><dd><b>A (30–45 min, solo prompt):</b> que las instrucciones de E0 a E3 digan: "Si en este mensaje ella acepta seguir o pide el siguiente dato, cuéntale solo ese dato (está en el bloque SOLO SI ELLA LO PIDE). Si ya le dijiste el dato de este escalón, no lo repitas: responde a lo que dijo". El backend ya permite esas cifras, porque verifica contra el modo en que termina el turno. <b>Alternativa de B:</b> agregar E1, E2 y E3 al re-llamado, conservando los datos.</dd>
+      </dl>
+      <div class="chat">
+        <div class="u">sí, veamos</div><div class="b">Dale, te voy contando de a un dato.</div><div class="x">↑ el modo pasa a E1 recién ahora</div>
+        <div class="u">¿y cuánto debo en total?</div><div class="b">Tu pago vence el 3 de noviembre.</div><div class="x">↑ E1 manda "contarle la fecha" y "no nombres el saldo"</div>
+      </div>
+    </article>
+
+    <article class="finding hi">
+      <div class="head"><span class="num">2</span><h3>El bot se queda callado si ella dice "sí" o "ya" dos veces seguidas</h3><span class="pill hi">Grave</span><span class="pill n">Certeza alta</span></div>
+      <dl>
+        <dt>Qué ve Patricia</dt><dd>Responde "ya" y luego "sí" a dos ofertas seguidas, y el bot no contesta nada. Para ella, se cayó.</dd>
+        <dt>Por qué pasa</dt><dd>En <code>conversation/transitions.py</code> (líneas 46–56) la lista de "acuses vacíos" incluye "si", "sí", "ya", "dale", "bueno" y "listo". La regla AB8 responde el primer acuse y <b>al segundo seguido devuelve None</b>: Twilio no manda nada (<code>service.py</code> 339–345). Pero en esta conversación esas palabras casi siempre son respuestas a una pregunta, no cortesía.</dd>
+        <dt>Arreglo</dt><dd><b>B (10 min):</b> dejar en la lista solo cortesías ("ok", "gracias", "ok gracias" y emojis). "Sí", "ya", "dale", "bueno" y "listo" tienen que llegar al modelo siempre.</dd>
+      </dl>
+    </article>
+
+    <article class="finding hi">
+      <div class="head"><span class="num">3</span><h3>Cuando el validador rechaza una respuesta, casi nunca hay reintento: sale un texto de relleno</h3><span class="pill hi">Grave</span><span class="pill n">Certeza alta</span></div>
+      <dl>
+        <dt>Qué ve Patricia</dt><dd>Respuestas genéricas fuera de contexto. En E1 a E3 el relleno es <i>"Déjame ordenarlo bien antes de contártelo."</i>: promete un mensaje que nunca llega, porque Contigo no escribe primero.</dd>
+        <dt>Por qué pasa</dt><dd>El reintento solo corre si quedan 9 segundos de un presupuesto de 11 (<code>agent/service.py</code> 121–125 y <code>core/config.py</code>). Es decir, solo si el modelo respondió en menos de 2 segundos, y su latencia típica es de 4 a 5. Si la primera respuesta falla un chequeo (más de 3 frases, una palabra prohibida, una cifra no permitida), sale directo el texto de respaldo del modo.</dd>
+        <dt>Arreglo</dt><dd><b>A (30 min):</b> permitir el reintento con el tiempo que quede (por ejemplo, si quedan 4 segundos o más), o recortar la respuesta a sus primeras 3 frases en vez de descartarla. <b>C:</b> cambiar el relleno de E1–E3 por uno que no prometa nada, por ejemplo "Perdona, me enredé. ¿Quieres que te lo cuente de nuevo, más simple?".</dd>
+      </dl>
+    </article>
+
+    <article class="finding hi">
+      <div class="head"><span class="num">4</span><h3>Las opciones numeradas cuentan como frases y hacen fallar el validador</h3><span class="pill hi">Grave</span><span class="pill n">Certeza media-alta</span></div>
+      <dl>
+        <dt>Qué ve Patricia</dt><dd>En los momentos donde el bot debe ofrecer opciones (pausa antes de comprar, o "no te entendí"), recibe un texto de relleno en vez de las opciones.</dd>
+        <dt>Por qué pasa</dt><dd><code>validators.contar_frases</code> (líneas 166–169) cambia cada número por "N" y corta en cada punto, así que "1." y "2." cuentan como frases. Un mensaje como <code>"Tú eliges.\n1. Esperar diez minutos.\n2. Ver cuánto sumaría."</code> da 5 frases y supera el máximo de 3. El test existente solo revisa que esos números no cuenten como cifras, no la cuenta de frases. Por el hallazgo 3, no hay reintento y sale el relleno. Es deducción leyendo el código; A lo confirma en un minuto corriendo <code>contar_frases</code> con ese texto.</dd>
+        <dt>Arreglo</dt><dd><b>A (15 min):</b> quitar los prefijos "1." y "2)" antes de contar frases, igual que ya se hace para las cifras. Esto también es requisito para cualquier onboarding con opciones.</dd>
+      </dl>
+    </article>
+
+    <article class="finding hi">
+      <div class="head"><span class="num">5</span><h3>Si después de pausar pide un dato, le repite el texto de pausa</h3><span class="pill hi">Grave</span><span class="pill n">Certeza alta (está documentado)</span></div>
+      <dl>
+        <dt>Qué ve Patricia</dt><dd>Dice "no quiero verlo ahora" y más tarde "ya, ¿cuándo vence?". El bot le vuelve a responder "Está bien, lo dejamos acá…".</dd>
+        <dt>Por qué pasa</dt><dd>En PAUSA_RECHAZO la instrucción del modelo es "la respuesta es el texto fijo de rechazo" (<code>prompts.py</code>), y con la preferencia de no ver cifras ese turno no trae datos (<code>service.py</code> 178). El modo cambia recién después. Figura en "Limitaciones conocidas" del CLAUDE.md.</dd>
+        <dt>Arreglo</dt><dd><b>B (30 min):</b> incluir "salir de la pausa pidiendo un dato" en el re-llamado, con los datos. <b>A:</b> que PAUSA_RECHAZO diga "si ella pide un dato o quiere seguir, acoge en una frase; el dato viene en el próximo mensaje" en vez de repetir la pausa.</dd>
+      </dl>
+    </article>
+
+    <article class="finding mid">
+      <div class="head"><span class="num">6</span><h3>El prompt no le explica al modelo los campos de estado; la regla de "no te entendí" nunca ofrece opciones</h3><span class="pill mid">Media</span><span class="pill n">Certeza alta</span></div>
+      <dl>
+        <dt>Qué pasa</dt><dd>El contexto trae <code>puedes_aclarar_ruta</code>, <code>escalon_maximo</code> y <code>limites_ya_dichos</code>, pero <code>static_prompt.txt</code> nunca dice qué hacer con ellos, así que las reglas AB1 y AB8 quedan a criterio del modelo. Además, <code>numbered_options_offered</code> se marca como hecho al segundo malentendido (<code>service.py</code> 150–156), <b>antes</b> de que las opciones se ofrezcan. Desde el tercer mensaje confuso se le dice "no puedes aclarar" y nunca recibe las opciones. Un "Hola" suelto cuenta como el primer malentendido (en tu prueba: "Hola" y luego "2").</dd>
+        <dt>Arreglo</dt><dd><b>A (20 min):</b> explicar esos campos en el prompt y marcar las opciones como ofrecidas cuando de verdad salen. <b>B:</b> no contar un saludo como malentendido.</dd>
+      </dl>
+    </article>
+
+    <article class="finding mid">
+      <div class="head"><span class="num">7</span><h3>"¿Y si pago 50 mil más?" se calcula como pagar 50 mil en total</h3><span class="pill mid">Media</span><span class="pill n">Certeza alta</span></div>
+      <dl>
+        <dt>Qué pasa</dt><dd><code>simulation.payment_amount</code> toma el número que ella escribió como el pago total. Pagar $50.000, menos que el mínimo de $74.350, da meses "ahorrados" negativos y un mensaje contradictorio. Además, el texto del faltante que aprobaste no está en el prompt: <code>static_prompt.txt</code> (líneas 64–65) todavía dice "NO lo menciones", y con los datos del banco el faltante aparece en casi cualquier simulación.</dd>
+        <dt>Arreglo</dt><dd><b>B (20 min):</b> reconocer "más", "extra" y "además del mínimo" y sumarlo al mínimo. <b>A (5 min):</b> pegar el texto aprobado: "Ojo con una cosa: con ese monto podrías quedar justa para lo de la casa este mes. Es un cálculo aproximado y la decisión es tuya." En la demo, usar "¿Y si pago 100 mil?" como dice el guion.</dd>
+      </dl>
+    </article>
+
+    <article class="finding mid">
+      <div class="head"><span class="num">8</span><h3>Un ejemplo del prompt contradice la regla de cansancio frente a crisis</h3><span class="pill mid">Media</span><span class="pill n">Certeza alta</span></div>
+      <dl>
+        <dt>Qué pasa</dt><dd>En la lista de etiquetas (<code>static_prompt.txt</code>, línea 85), el ejemplo de <code>angustia_fuerte</code> es "ya no puedo más". La regla acordada (caso C10) dice que "no puedo más" sin señales de riesgo es cansancio. El ejemplo empuja a mandar el texto de crisis por cansancio. Además, el pre-filtro dispara con "no quiero estar acá", que en esta conversación puede significar "no quiero estar acá viendo cuentas".</dd>
+        <dt>Arreglo</dt><dd><b>A (5 min):</b> cambiar el ejemplo por "no quiero seguir viviendo" y revisar el patrón "no quiero estar acá" del pre-filtro.</dd>
+      </dl>
+    </article>
+
+    <article class="finding lo">
+      <div class="head"><span class="num">9</span><h3>La memoria se borra con cada cambio que se sube a main</h3><span class="pill lo">Operativo</span><span class="pill n">Certeza alta</span></div>
+      <dl>
+        <dt>Qué pasa</dt><dd>El estado vive en memoria y Railway se reinstala con cada merge (12 hoy). Toda conversación vuelve a cero y el bot saluda como si no la conociera.</dd>
+        <dt>Arreglo</dt><dd>Durante las pruebas finales y la demo, <b>ningún merge</b> (o apagar el auto-deploy en Railway), y <code>/reiniciar</code> antes de empezar.</dd>
+      </dl>
+    </article>
+
+    <article class="finding lo">
+      <div class="head"><span class="num">10</span><h3>Revisar el "Status callback" de Twilio</h3><span class="pill lo">Por verificar</span><span class="pill n">Certeza baja</span></div>
+      <dl>
+        <dt>Qué pasa</dt><dd>Si el sandbox tiene una URL en "Status callback", Twilio manda avisos sin texto al mismo webhook. El código los procesa como mensajes vacíos y guarda en el historial respuestas que Patricia nunca vio. El CLAUDE.md lo advierte.</dd>
+        <dt>Arreglo</dt><dd><b>B (2 min):</b> confirmar en Twilio que ese campo está vacío. Opcional: ignorar en el webhook los mensajes sin texto y sin archivos.</dd>
+      </dl>
+    </article>
+
+    <p class="lede"><b>Corrección a lo que te dije antes:</b> el historial que ve el modelo (los 2 últimos mensajes) es el último intercambio completo y alcanza para entender "sí" o "la segunda". No es una causa principal.</p>
+  </section>
+
+  <section>
+    <h2>Por qué no aparece el onboarding</h2>
+    <div class="key">
+      <p><b>Porque nunca se programó.</b> En el repo no hay ninguna referencia a "onboarding": ni archivos, ni PR, ni rama. Lo que probamos fue un prompt separado en el Playground de OpenAI, que el bot de WhatsApp no usa. El archivo <code>onboarding.py</code> con los textos está listo en tu computador, pero no se ha subido.</p>
+      <p><b>Para tenerlo en WhatsApp:</b> B guarda las respuestas y manda las preguntas como textos fijos (1,5 h), A agrega las instrucciones por perfil (1,5 h), y antes hay que arreglar el hallazgo 4, porque las preguntas con opciones no pasan el validador.</p>
+      <p><b>Recomendación:</b> primero los arreglos 1 a 5, que afectan a toda la demo. El onboarding, solo si quedan 3 horas después. Si no, se muestra en el pitch con el Playground como "lo que viene".</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Plan para esta noche</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Orden</th><th>Quién</th><th>Qué</th><th>Tiempo</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>B</td><td>Sacar "sí", "ya", "dale", "bueno" y "listo" de los acuses (hallazgo 2) y revisar el Status callback (hallazgo 10)</td><td>15 min</td></tr>
+        <tr><td>2</td><td>A</td><td>Instrucciones de E0–E3 según si acepta (1), contar frases sin las opciones (4), ejemplo de crisis (8) y texto del faltante (7)</td><td>1 h</td></tr>
+        <tr><td>3</td><td>A</td><td>Reintento con el tiempo que quede, o recortar en vez de descartar (3)</td><td>30 min</td></tr>
+        <tr><td>4</td><td>B</td><td>Salir de la pausa pidiendo un dato (5) y "50 mil más" (7)</td><td>45 min</td></tr>
+        <tr><td>5</td><td>C</td><td>Nuevo texto de relleno para E1–E3. Después de los merges, correr el runner P0 con el LLM real y probar por WhatsApp fuera del guion</td><td>45 min</td></tr>
+        <tr><td>6</td><td>Todos</td><td>Hora límite de merges. Después, solo pruebas y <code>/reiniciar</code></td><td>—</td></tr>
+      </tbody>
+    </table></div>
+    <p class="lede">Para medirlo: en el dashboard (<code>/dashboard</code>), la línea de tiempo muestra por turno el modo de entrada y de salida y la etiqueta, y deja ver el turno de atraso. En los logs de Railway, contar cuántas veces aparece "sin presupuesto para el reintento de validacion": esa es la frecuencia del hallazgo 3.</p>
+  </section>
+</main>
+
+</body></html>

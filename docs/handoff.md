@@ -202,7 +202,13 @@ movimientos en firme. Falta:
 
 Es una feature nueva, en su propia rama y su propio PR.
 
-### ⬜ 7. Volver a medir
+### ⬜ 7. Volver a medir (parcial)
+
+**Avance:** los casos P0 se corrieron contra el modelo real en `04c50a9` y en `main`, con el mismo
+criterio de abajo: 7 de 21 turnos problemáticos antes, 2 de 21 después. No es comparable con el 40 %
+y el detalle (incluido un defecto nuevo en E2) está en [`medicion-despues.md`](medicion-despues.md).
+**Sigue faltando** el PDF "Respuestas vagas de Contigo" con los 52 turnos. El HTML que sí se subió
+(`docs/diagnostico_contigo.html`) es el diagnóstico del código, no los turnos.
 
 El 40 % de respuestas problemáticas es el número de **antes**. Nadie ha medido el después sobre
 los mismos 52 turnos. Sin esa pasada no se puede afirmar que mejoró — solo que los seis casos P0
