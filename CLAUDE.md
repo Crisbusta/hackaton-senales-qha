@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Si retomas este trabajo sin contexto, empieza por [`docs/handoff.md`](docs/handoff.md):**
+> el estado medido, el roadmap de 7 pasos (2 cerrados) y qué hacer en cada uno de los que
+> faltan. Dice también qué decisiones **no** son de quien programa, sino de C (la voz) o de B
+> (el contrato).
+
 > **Mantener este archivo al día.** Si un PR cambia el flujo de un turno, el contrato, una
 > decisión de diseño o una limitación listada abajo, actualiza la sección correspondiente en el
 > mismo PR. La sección "Limitaciones conocidas" es la lista de mejoras pendientes.
@@ -159,6 +164,8 @@ diferida), repositorio, banco, transcriptor de voz (`build_transcriber`) y servi
 - `docs/casos_p0.md`: casos de prueba de C (los lee el runner; no cambiar el formato de las
   tablas sin ajustar `scripts/p0_runner.py`).
 - `docs/guion-demo.md`: guion, preparativos y plan B de la demo.
+- `docs/handoff.md`: estado medido, el roadmap de 7 pasos y las trampas de cada uno. Es el
+  punto de entrada para quien retome el trabajo sin contexto.
 
 ## Invariantes de seguridad y privacidad
 
