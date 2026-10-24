@@ -27,6 +27,7 @@ class Milestone:
 
 
 FIRST_CONTACT = Milestone("primer_contacto", "Primera conversación")
+SHARED_STATEMENT = Milestone("compartio_estado", "Compartió su estado de cuenta")
 SAW_DUE_DATE = Milestone("vio_vencimiento", "Vio su fecha de vencimiento")
 SAW_BALANCE = Milestone("vio_minimo_y_saldo", "Vio su pago mínimo y su saldo")
 SAW_BREAKDOWN = Milestone("vio_desglose", "Entendió en qué se reparte el mínimo")
@@ -39,6 +40,7 @@ CLOSED = Milestone("cierre", "Cerró la conversación")
 
 MILESTONES = (
     FIRST_CONTACT,
+    SHARED_STATEMENT,
     SAW_DUE_DATE,
     SAW_BALANCE,
     SAW_BREAKDOWN,
@@ -137,6 +139,28 @@ def record_turn(
             mode_to=state.mode,
             intent=intent,
             event=event,
+            milestones=new,
+        )
+    )
+    return new
+
+
+def record_system_turn(
+    state: ConversationState, intent: str, milestones: list[Milestone]
+) -> list[str]:
+    """Turno resuelto por el backend sin el agente (p. ej. recibir el PDF)."""
+    reached = ([FIRST_CONTACT] if state.turn_count == 1 else []) + milestones
+    new = [m.key for m in reached if m.key not in state.milestones]
+    now = utc_now()
+    for key in new:
+        state.milestones[key] = now
+    state.timeline.append(
+        TimelineEntry(
+            at=now,
+            turn=state.turn_count,
+            mode_from=state.mode,
+            mode_to=state.mode,
+            intent=intent,
             milestones=new,
         )
     )

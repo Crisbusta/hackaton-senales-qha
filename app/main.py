@@ -11,6 +11,7 @@ from app.modules.banking.provider import build_bank_provider
 from app.modules.conversation.repository import build_repository
 from app.modules.conversation.service import ConversationService
 from app.modules.dashboard.router import router as dashboard_router
+from app.modules.whatsapp.media import build_media_fetcher
 from app.modules.whatsapp.router import router as whatsapp_router
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
         agent_timeout_s=settings.agent_timeout_s,
         bank=build_bank_provider(settings),
         demo_admins=settings.demo_admins,
+        media_fetcher=build_media_fetcher(settings),
     )
 
     @app.get("/health", tags=["health"])

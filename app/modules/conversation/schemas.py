@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -6,6 +6,7 @@ from app.modules.agent.interface import (
     ConversationEvent,
     ConversationMessage,
     ConversationMode,
+    FinancialField,
 )
 
 
@@ -17,6 +18,16 @@ class RecordedEvent(BaseModel):
     event: ConversationEvent
     message_sid: str
     at: datetime = Field(default_factory=utc_now)
+
+
+class StoredStatement(BaseModel):
+    """Estado de cuenta en PDF que ella envió, ya leído (solo campos, sin texto ni nombre/RUT)."""
+
+    fields: dict[str, FinancialField]
+    statement_date: date | None = None
+    period_end: date | None = None
+    issues: list[str] = Field(default_factory=list)
+    received_at: datetime = Field(default_factory=utc_now)
 
 
 class TimelineEntry(BaseModel):
@@ -67,6 +78,9 @@ class ConversationState(BaseModel):
     installment_calc_requested: bool = False
     # Si la compra en cuotas es esencial (remedios), no se ofrece pausa ni cálculo.
     installment_essential: bool | None = None
+
+    # T07: el último estado de cuenta en PDF que ella envió.
+    statement: StoredStatement | None = None
 
     # Dashboard de progreso: avances logrados (clave → cuándo) y un turno por entrada.
     milestones: dict[str, datetime] = Field(default_factory=dict)
