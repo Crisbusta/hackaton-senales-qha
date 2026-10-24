@@ -63,6 +63,11 @@ class ConversationState(BaseModel):
     # AB7: un límite se dice una vez (p. ej. la línea *4141).
     stated_limits: list[str] = Field(default_factory=list)
 
+    # AB7: "puedo mirar tu estado de cuenta por ti" se dice una sola vez. No
+    # había nada que lo registrara: la regla vivía en el prompt y el modelo la
+    # cumplía a ojo, así que la misma frase salió en 10 de 52 turnos medidos.
+    opening_offer_made: bool = False
+
     # AB8: dos fallos de reconocimiento seguidos habilitan las opciones
     # numeradas, una sola vez. El contador vuelve a 0 cuando entiende.
     recognition_failures: int = 0
@@ -78,6 +83,11 @@ class ConversationState(BaseModel):
     installment_calc_requested: bool = False
     # Si la compra en cuotas es esencial (remedios), no se ofrece pausa ni cálculo.
     installment_essential: bool | None = None
+    # T10: el cálculo de la cuota ya salió, con el monto y las cuotas que ella
+    # dio. Sin esto, el turno siguiente volvía a pedirle los mismos datos:
+    # medido el 24 oct, "igual la voy a comprar" contestaba "¿cuál es el monto
+    # y en cuántas cuotas?" con la cifra ya entregada el turno anterior.
+    installment_calc_shown: bool = False
 
     # Nota de voz con un monto: la transcripción espera un "sí" antes de simular
     # (un monto dicho se puede oír mal). Vale solo para el turno siguiente.

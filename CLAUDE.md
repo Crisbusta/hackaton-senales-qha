@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Si retomas este trabajo sin contexto, empieza por [`docs/handoff.md`](docs/handoff.md):**
+> el estado medido, el roadmap de 7 pasos (2 cerrados) y qué hacer en cada uno de los que
+> faltan. Dice también qué decisiones **no** son de quien programa, sino de C (la voz) o de B
+> (el contrato).
+
 > **Mantener este archivo al día.** Si un PR cambia el flujo de un turno, el contrato, una
 > decisión de diseño o una limitación listada abajo, actualiza la sección correspondiente en el
 > mismo PR. La sección "Limitaciones conocidas" es la lista de mejoras pendientes.
@@ -63,21 +68,26 @@ ConversationService.handle()            conversation/service.py
      siguiente procesa esa transcripción (ahí se simula); cualquier otra cosa la descarta.
      Con texto, el audio se ignora; sin transcriptor (VOICE_ENABLED=false) el audio va vacío
   4. AB8: un acuse vacío ("ok", "gracias") se responde una sola vez
-  5. simulation.plan_turn(): "¿y si pago 100 mil?" desde E2+ → modo E4 ANTES de llamar al agente;
-     opción 2 en PAUSA_COMPRA → installment_calc_requested
-  6. banco (si hay consentimiento) + PDF guardado, unidos por merge_sources → financial_data
-     (nada si pidió ocultar cifras)
-     - precarga: en E0–E4 viajan TODOS los campos de la Escalera (figures.fields_to_send)
-     - calculations del motor financiero (solo si calculations_allowed)
-  7. agent.process() con asyncio.wait_for(AGENT_TIMEOUT_S)  → fallo/timeout = IntegrationError
-  8. apply_event() + transitions.siguiente_modo()  (el modo cambia DESPUÉS de responder)
-  9. _reanswer_on_mode_entry(): si el turno entró a PAUSA_COMPRA o retomó desde una pausa/APOYO/
-     CIERRE hacia E0, se pide la respuesta otra vez con el modo nuevo (la clasificación es la del
-     primer llamado; nunca se re-redacta un texto de crisis)
- 10. _enforce_mode_figures(): la respuesta solo puede traer montos del modo con que se llamó /
-     en que terminó, o los que ella escribió → si no, 1 reintento → si no, texto sin cifras
- 11. si pidió no ver cifras y hay un monto → NO_FIGURES_REPLY (salvo protected_text)
- 12. progress.record_turn() (avances + timeline) → repository.save()
+
+  --- 1. CLASIFICAR ---
+  5. agent.classify(): etiqueta, esencial, monto mencionado, ritmo.
+     Esta llamada NO recibe ninguna cifra: ni financial_data, ni calculations, ni
+     el historial sin enmascarar. No puede filtrar un monto porque no tiene ninguno.
+
+  --- 2. DECIDIR (reglas deterministas, sin modelo) ---
+  6. apply_event() + transitions.siguiente_modo() → el modo FINAL del turno
+  7. installment_essential / installment_calc_requested / installment_calc_shown
+  8. simulation.plan_turn(): "¿y si pago 100 mil?" → E4 con ese monto
+  9. banco + PDF (si hay consentimiento y no pidió ocultar cifras) → financial_data
+     con EXACTAMENTE los campos de fields_for_mode(modo_final, etiqueta)
+ 10. calculations del motor financiero (solo si calculations_allowed)
+
+  --- 3. REDACTAR ---
+ 11. agent.write(): los datos exactos y los movimientos ya resueltos. El redactor
+     no evalúa ninguna condición de estado porque no le llega ninguna.
+ 12. si pidió no ver cifras y hay un monto → NO_FIGURES_REPLY (salvo protected_text)
+ 13. red de seguridad: un monto que no viajó → STEP_BY_STEP_REPLY (sin reintento)
+ 14. progress.record_turn() (avances + timeline) → repository.save()
   → TwiML (un error del handler responde 200 con un texto amable, nunca 5xx)
 
 Con REPLY_MODE=async (whatsapp/outbound.py): el webhook responde de inmediato con TwiML vacío,
@@ -85,10 +95,16 @@ el turno corre en segundo plano (BackgroundTasks, un candado por usuario para re
 y la respuesta sale por la API REST de Twilio. Sin el límite de ~15 s del webhook.
 ```
 
-El "turno de atraso" (el modo cambia después de que el agente responde) es la causa raíz de
-varias decisiones: la precarga + verificación (6, 10), la detección previa de T10 (5) y el
-re-llamado al entrar a un modo (9). Si aparece un bug de "respondió como si estuviera en el modo
-anterior", empieza por ahí.
+**El "turno de atraso" ya no existe.** Mientras el turno fue una sola llamada, el modelo
+redactaba con el modo de ENTRADA y el modo cambiaba después: de ahí venían la precarga con su
+verificación posterior, la detección previa de T10 como forma de cambiar el modo, y el re-llamado
+al entrar a un modo (`_reanswer_on_mode_entry`). Los tres existían para compensar el orden y se
+borraron con él. Medido contra el modelo real: "sí, veamos" pasó de "¿Qué te gustaría saber
+primero?" a "tu pago vence el 3 de noviembre de 2026", y las dos opciones de PAUSA_COMPRA llegan
+en el mismo turno en vez de perderse por presupuesto.
+
+Si aparece un bug de "respondió como si estuviera en otro modo", mira qué modo recibió `write()`
+en la traza: ahí está el modo final del turno.
 
 ## Módulos y dueños
 
@@ -109,23 +125,47 @@ diferida), repositorio, banco, transcriptor de voz (`build_transcriber`) y servi
 
 ## Contrato (`agent/interface.py`) y documentos
 
-- `AgentRequest` / `AgentResponse` / `Agent` (Protocol). `ConversationMode` (E0–E4,
-  PAUSA_RECHAZO, PAUSA_COMPRA, APOYO, CIERRE) lo decide **solo el backend**.
+- `Agent` (Protocol) tiene dos pasos: `classify(ClassifyRequest) -> Classification` y
+  `write(WriteRequest) -> AgentReply`. El backend llama a los dos con su decisión de estado en
+  medio. `ConversationMode` (E0–E4, PAUSA_RECHAZO, PAUSA_COMPRA, APOYO, CIERRE) lo decide **solo
+  el backend**, y `WriteRequest.mode` es el modo FINAL del turno.
+- Los cuatro modelos son `extra="forbid"`: un campo que no existe es un error, no algo que se
+  descarte en silencio.
+- `ClassifyRequest` no tiene ningún campo donde quepa un monto: es una garantía por construcción,
+  no una regla que haya que vigilar.
 - `FIELDS_BY_MODE` + `fields_for_mode()` es la **única** tabla de qué dato pertenece a qué modo;
-  la usan backend y agente.
-- `Intent` (16 etiquetas, StrEnum) pero `AgentResponse.intent` es `str`: comparar siempre contra
-  `Intent.X` sin asumir que el valor está en el enum.
+  la usan backend y agente. Dos etiquetas no reciben ningún campo en ningún modo:
+  `reaccion_a_cifra` y `ambiguo`. Ella acaba de ver sus cifras y no está pidiendo un dato;
+  repetirlas rompe AB6 y, medido, también el presupuesto del turno.
+- `LIMIT_CRISIS_LINE` vive en el contrato, no en `transitions.py`: el backend registra el límite y
+  el agente decide con él (`already_stated_limits`), así que la constante no puede ser de uno de
+  los dos lados. El texto de crisis que pregunta "¿estás a salvo?" sale la primera vez; desde la
+  segunda sale el de refuerzo, y lo que distingue los dos casos es si las líneas ya se dijeron, no
+  el modo (con el orden nuevo, una crisis siempre llega a `write()` ya en APOYO).
+- `installment_calc_shown`: el cálculo de la cuota sale una vez, con el monto que ella dio. Desde
+  ahí lo que falta es respetar lo que decida, no volver a pedirle los mismos datos; una compra
+  nueva vuelve a encender el pedido en `simulation.plan_turn`.
+- `Intent` (18 etiquetas, StrEnum) pero `Classification.intent` es `str`: comparar siempre contra
+  `Intent.X` sin asumir que el valor está en el enum. `UNKNOWN` está reservado para "no hubo
+  clasificación" (el proveedor falló); una etiqueta que el modelo invente viaja tal cual.
 - Montos `int` (CLP). Fechas y tasas viajan como texto formateado; si hace falta operar una tasa,
   `Decimal`.
 - Claves del simulador en `calculations`: `meses_pagando_*`, `intereses_pagando_*`,
   `meses_ahorrados`, `intereses_ahorrados`, `intereses_del_mes`, `faltante_para_gastos_esenciales`,
   `cuota_mensual`.
 - `docs/maquina-de-estados.md`: transiciones y reglas anti-bucle AB1–AB8.
+- Las reglas anti-bucle viajan al modelo como **movimientos resueltos**, no como flags: el
+  bloque `ESTADO` del contexto solo lleva `modo`. `puedes_ofrecer_continuar`,
+  `puedes_aclarar_ruta`, `limites_ya_dichos` y `escalon_maximo` los evalúa `armar_contexto()` y
+  se traducen en una instrucción que está o no está. Un flag en el contexto es una condicional
+  que el modelo tiene que interpretar; una instrucción ausente no se interpreta.
 - Si cambia una cifra de Patricia, debe cambiar en el fixture del banco, en los PDFs de prueba y en
   `docs/casos_p0.md` a la vez (hay tests que verifican que banco y estado de cuenta coincidan).
 - `docs/casos_p0.md`: casos de prueba de C (los lee el runner; no cambiar el formato de las
   tablas sin ajustar `scripts/p0_runner.py`).
 - `docs/guion-demo.md`: guion, preparativos y plan B de la demo.
+- `docs/handoff.md`: estado medido, el roadmap de 7 pasos y las trampas de cada uno. Es el
+  punto de entrada para quien retome el trabajo sin contexto.
 
 ## Invariantes de seguridad y privacidad
 
@@ -141,9 +181,10 @@ diferida), repositorio, banco, transcriptor de voz (`build_transcriber`) y servi
 
 `app/core/config.py` (pydantic-settings, lee `.env`). Las que importan para entender el sistema:
 `APP_ENV`, `AGENT_IMPL` (`mock`|`llm`), `REPLY_MODE` (`twiml`: responde dentro del webhook, que
-Twilio corta a ~15 s | `async`: responde por la API REST), `AGENT_TIMEOUT_S` (12 con `twiml`; ~25
-con `async`; el presupuesto interno del agente es `AGENT_TIMEOUT_S − agent_budget_margin_s`),
-`OPENAI_TIMEOUT_S` (9),
+Twilio corta a ~15 s | `async`: responde por la API REST), `AGENT_TIMEOUT_S` (13 con `twiml`; con
+`async` puede subir a ~25; el presupuesto interno del agente es
+`AGENT_TIMEOUT_S − agent_budget_margin_s`), `OPENAI_TIMEOUT_S` (9),
+`OPENAI_CLASSIFY_TIMEOUT_S` (7), `OPENAI_MAX_OUTPUT_TOKENS` (450),
 `PUBLIC_BASE_URL` (solo el origen, sin path ni `/` final), `TWILIO_AUTH_TOKEN` (el **primario** de
 Twilio), `TWILIO_ACCOUNT_SID` (para descargar el PDF), `MOCK_BANK_SCENARIO`, `DEMO_ADMIN_NUMBERS`,
 `DASHBOARD_PASSWORD`, `DATABASE_URL` (vacío = en memoria; con valor = PostgreSQL), `VOICE_ENABLED`
@@ -152,6 +193,29 @@ Twilio), `TWILIO_ACCOUNT_SID` (para descargar el PDF), `MOCK_BANK_SCENARIO`, `DE
 (`small`), `VOICE_MAX_SECONDS` (60), `VOICE_TIMEOUT_S` (20: pensado para la respuesta fuera de
 banda; con TwiML síncrono no cabe en los ~15 s de Twilio), `VOICE_CPU_THREADS` (0 = auto). En Railway los valores
 van sin comillas en el campo de valor.
+
+### Los plazos del turno
+
+Twilio corta el webhook a los ~15 s y el turno son **dos llamadas en serie**, así que los plazos
+no son independientes:
+
+- `OPENAI_CLASSIFY_TIMEOUT_S` (7) es una **reserva**, no un techo: la clasificación no puede
+  gastar más que eso para que a la redacción le quede su parte. El agente aplica la misma reserva
+  hacia dentro, también a su modelo de respaldo.
+- `OPENAI_TIMEOUT_S` (9) es el **techo** de la redacción, acotado además por lo que quede del
+  presupuesto. La redacción **no tiene modelo de respaldo**: medido, el principal se cortaba a los
+  7 s y el respaldo llevaba el turno a 9,7 s, duplicando el costo del paso más caro justo cuando
+  ya no queda tiempo. Si falla, sale el texto de respaldo del modo, que validó C.
+- `Settings` valida que `agent_turn_budget_s >= openai_classify_timeout_s + MIN_REDACCION_S`: un
+  presupuesto que no alcanza no arranca, en vez de degradarse en silencio.
+- `OPENAI_MAX_OUTPUT_TOKENS` (450) es una red de seguridad de latencia, no un límite de estilo: la
+  latencia es casi lineal en los tokens (incluidos los de razonamiento, que son la mayoría). El
+  turno legítimo más largo medido es E3 con 295 tokens y 6,5 s. Pasarse del techo rompe el JSON y
+  el turno sale con el texto de respaldo: el mismo final que el timeout, pero al instante y sin
+  gastarse los 9 s.
+
+Medido el 24 oct contra el modelo real, 22 clasificaciones y 18 redacciones: clasificar 1,6–4,1 s
+(mediana 2,0), redactar 1,6–6,5 s (mediana 2,8). El peor turno observado punta a punta, 10,7 s.
 
 ## Tests
 
@@ -201,14 +265,25 @@ no coinciden.
   Textos de voz (`voice_intake.*_REPLY`) pendientes de validación de C. La confirmación de montos
   solo cubre lo que detecta el simulador por reglas; un monto mal oído fuera del simulador
   ("me pagaron 100 mil") viaja tal cual al agente. El runner P0 no tiene pasos con audio.
-- **Salir de una pausa pidiendo un dato** (no con "hola") todavía responde con el texto de pausa
-  en ese turno (solo la retoma hacia E0 se re-pregunta).
 - **Respuestas fuera de banda (`REPLY_MODE=async`)**: si el proceso se reinicia (deploy) mientras
   un turno corre en segundo plano, esa respuesta se pierde; el candado por usuario es por proceso
   (sirve con 1 réplica).
 - **Detección de T10 por reglas**: solo con montos explícitos ("100 mil", "$100.000", "80 lucas").
 - **`faltante_para_gastos_esenciales`**: el texto lo define C; el agente no debe mencionarlo hasta
   que esté validado.
-- **Precarga**: hay que medir cuánto sobreexpone el modelo los datos del bloque "solo si lo pide"
-  (si supera ~10–20 % de los turnos, revisar el enfoque).
+- **El modelo de respaldo solo existe en la clasificación**, y ahí solo cubre los errores rápidos
+  (401, 429 inmediato): necesita tiempo libre dentro de su propia reserva, y un timeout del
+  principal se la come. En la redacción no hay respaldo a propósito (ver "Los plazos del turno").
+- **Al salir de una pausa, el turno llega con todos los campos del escalón más alto**: ella
+  preguntó una cosa ("¿cuánto era el mínimo?") y recibe el mínimo, el saldo, el vencimiento y el
+  desglose. `_siguiente_escalon(max_modo)` es correcto para el modo, pero `FIELDS_BY_MODE` no
+  distingue "entrar al escalón" de "volver a él", así que repite cifras ya vistas —justo lo que
+  AB6 nombra— y va contra "de a un dato por vez". Para arreglarlo bien hace falta decidir qué
+  responde ese turno (C) y probablemente etiquetas más finas que `solicitud_informacion`.
+- **Dos llamadas en serie**: medido el 24 oct, el peor turno punta a punta fue 10,7 s, dentro de la
+  ventana de Twilio; los plazos y las medianas están en "Los plazos del turno". Lo que queda sin
+  red es el peor caso absoluto: si las dos se van al máximo, el turno sale con el texto de respaldo
+  del modo. La salida de fondo es responder por la API REST de Twilio en vez de TwiML, que elimina
+  el techo de los 15 s; `OPENAI_CLASSIFY_MODEL` permite probar un clasificador más rápido sin
+  tocar código.
 - `railway.json` (Config as Code) está deprecado por Railway a partir del 2026-12-01.

@@ -1,12 +1,22 @@
 """Coordinador del flujo conversacional.
 
-Un turno: deduplicar → recuperar estado → detectar si pidió una simulación
-(T10) → armar `financial_data` y `calculations` desde el banco → invocar al
-agente (con presupuesto de tiempo) → aplicar reglas deterministas sobre el
-evento → verificar las cifras de la respuesta → persistir → responder.
+Un turno son tres pasos, en este orden:
+
+  1. CLASIFICAR: el agente etiqueta el mensaje. Esa llamada no recibe ninguna
+     cifra, así que no puede filtrar un monto.
+  2. DECIDIR: este servicio aplica sus reglas deterministas —evento, modo,
+     anti-bucle, simulación— y queda con el modo FINAL del turno.
+  3. REDACTAR: el agente escribe, con los datos exactos de ese modo final.
+
+El orden importa y es el cambio de fondo. Mientras fue un solo paso, el
+modelo redactaba con el modo de ENTRADA y el modo cambiaba después: de ahí
+venían el turno de atraso, la precarga con su verificación posterior, la
+detección previa de T10 como forma de cambiar el modo, y el re-llamado al
+entrar a un modo. Los cuatro mecanismos existían para compensar el orden y
+desaparecen con él.
 
 El agente interpreta y redacta; el estado (modo, preferencias) lo decide
-este servicio con reglas deterministas.
+este servicio.
 """
 
 import asyncio
@@ -18,15 +28,19 @@ from app.core.logging import mask_phone
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
     Agent,
-    AgentRequest,
-    AgentResponse,
+    AgentReply,
+    Classification,
+    ClassifyRequest,
     ConversationEvent,
     ConversationMessage,
     ConversationMode,
     FinancialField,
     Intent,
+    WriteRequest,
     calculations_allowed,
+    fields_for_mode,
 )
+from app.modules.agent.validators import es_oferta_de_continuar
 from app.modules.banking.provider import BankDataProvider
 from app.modules.banking.schemas import BankSnapshot
 from app.modules.banking.service import credit_card_fields
@@ -54,6 +68,10 @@ RECENT_HISTORY_MESSAGES = 4
 # duda, una respuesta sin cifras es preferible a mostrar un monto no deseado.
 _AMOUNT_PATTERN = re.compile(r"\$\s*\d|\b\d{1,3}(?:\.\d{3})+\b|\b\d{4,}\b")
 
+# Opciones numeradas en la respuesta, una por línea. AB8 las cuenta cuando
+# salen de verdad, no cuando se habilitan.
+RE_OPCIONES = re.compile(r"(?m)^\s*[123][.)]\s")
+
 # Si la respuesta trae cifras que no corresponden al modo y no se pudo
 # corregir a tiempo. Pendiente de validación de tono por C.
 STEP_BY_STEP_REPLY = "Vamos de a poco. ¿Quieres que lo veamos paso a paso?"
@@ -63,19 +81,6 @@ MIN_RETRY_S = 3.0
 
 RESET_COMMANDS = frozenset({"/reiniciar", "/reset"})
 DEMO_RESET_REPLY = "Listo, la conversación empieza de cero. (modo demo)"
-
-# Modos cuya respuesta depende del modo y que se pueden ESTRENAR en el mismo turno:
-# al entrar, se vuelve a pedir la respuesta con el modo nuevo. PAUSA_RECHAZO y
-# APOYO no lo necesitan al entrar: responden con textos fijos según la etiqueta.
-REANSWER_ON_ENTRY = (ConversationMode.INSTALLMENT_PAUSE,)
-
-# Al RETOMAR desde estos modos ("hola, ya estoy mejor" → E0), el agente redactó
-# todavía en el modo anterior (texto de pausa o despedida): se pide de nuevo en E0.
-REANSWER_ON_RESUME_FROM = (
-    ConversationMode.PAUSE,
-    ConversationMode.SUPPORT,
-    ConversationMode.CLOSING,
-)
 
 NO_FIGURES_REPLY = (
     "Dejemos los números de lado por ahora, como me pediste. Aquí estoy cuando quieras retomarlo."
@@ -131,34 +136,56 @@ class ConversationService:
         return state.recognition_failures > 0
 
     @staticmethod
-    def _apply_transition(state: ConversationState, response: AgentResponse) -> None:
-        """El modo del próximo turno, más AB6."""
+    def _apply_transition(state: ConversationState, classification: Classification) -> None:
+        """El modo de ESTE turno, más AB6.
+
+        Antes era "el modo del próximo turno", porque el agente ya había
+        redactado cuando esto corría. Ahora corre entre clasificar y redactar:
+        el modo que decide es el que el redactor va a usar.
+        """
         state.mode = transitions.siguiente_modo(
-            state.mode, state.max_mode_reached, response.intent, response.event
+            state.mode, state.max_mode_reached, classification.intent, classification.event
         )
         state.max_mode_reached = transitions.subir_maximo(state.max_mode_reached, state.mode)
 
     @staticmethod
     def _record_anti_loop(
         state: ConversationState,
-        response: AgentResponse,
+        classification: Classification,
         reply: str,
-        previous_mode: ConversationMode,
     ) -> None:
         """Lo que hay que recordar para no repetirse en el próximo turno."""
-        # AB2: si la oferta salió, se consume en el escalón donde salió.
-        if previous_mode in transitions.MODOS_CON_OFERTA and "seguimos" in reply.lower():
-            key = previous_mode.value
+        # AB2: si la oferta salió, se consume en el escalón donde salió. El
+        # reconocimiento es el mismo que usa el validador para rechazarla: con
+        # dos patrones distintos, ampliar uno solo deja la asimetría peor.
+        #
+        # El escalón es el FINAL del turno, que es el modo con el que el
+        # redactor escribió. Con el modo de ENTRADA el contador se acreditaba
+        # al escalón anterior: medido el 24 oct en C02, la oferta del turno 3
+        # (E1 → E2) quedó anotada en E1, E2 nunca registró ninguna y el turno
+        # 4 volvió a ofrecer "¿Seguimos o lo dejamos aquí?" en el mismo
+        # escalón. Es el ultimo resto del turno de atraso: mientras el modelo
+        # redactaba con el modo de entrada, `previous_mode` era el correcto.
+        if state.mode in transitions.MODOS_CON_OFERTA and es_oferta_de_continuar(reply):
+            key = state.mode.value
             state.offers_by_mode[key] = state.offers_by_mode.get(key, 0) + 1
 
         # AB7: la línea de crisis se ofrece una vez.
         if "*4141" in reply and transitions.LIMITE_LINEA_CRISIS not in state.stated_limits:
             state.stated_limits.append(transitions.LIMITE_LINEA_CRISIS)
 
+        # AB7: y la oferta de mirar el estado de cuenta por ella, también.
+        if "estado de cuenta" in reply.lower():
+            state.opening_offer_made = True
+
         # AB8: el contador vuelve a 0 cuando entiende.
-        if response.intent == Intent.AMBIGUOUS:
+        if classification.intent == Intent.AMBIGUOUS:
             state.recognition_failures += 1
-            if state.recognition_failures >= 2:
+            # El flag se marca cuando las opciones SALEN, no cuando se
+            # habilitan. Se marcaba al llegar al segundo fallo, antes de
+            # ofrecerlas: desde el tercer mensaje confuso se le decía "no
+            # puedes aclarar" y nunca las recibía.
+            if RE_OPCIONES.search(reply):
                 state.numbered_options_offered = True
         else:
             state.recognition_failures = 0
@@ -172,12 +199,18 @@ class ConversationService:
         bank: BankDataProvider | None = None,
         demo_admins: frozenset[str] = frozenset(),
         media_fetcher: MediaFetcher | None = None,
+        classify_timeout_s: float | None = None,
         transcriber: Transcriber | None = None,
         voice_timeout_s: float = 20.0,
     ) -> None:
         self._agent = agent
         self._repository = repository
         self._agent_timeout_s = agent_timeout_s
+        # La reserva del paso de clasificación. Sin valor, se le da el turno
+        # completo: es lo que hacen los tests que no miden tiempos.
+        self._classify_timeout_s = (
+            classify_timeout_s if classify_timeout_s is not None else agent_timeout_s
+        )
         self._bank = bank
         self._demo_admins = demo_admins
         self._media_fetcher = media_fetcher
@@ -206,11 +239,23 @@ class ConversationService:
         state: ConversationState,
         snapshot: BankSnapshot | None,
         simulated: dict[str, FinancialField],
+        intent: str | None,
     ) -> dict[str, FinancialField]:
-        """Los campos que viajan al agente: precarga en los escalones, filtro por modo fuera.
+        """Exactamente los campos del modo final. Sin precarga.
 
         Fuentes: el banco (con consentimiento) y el estado de cuenta en PDF que ella
         envió, unidos por `statement_intake.merge_sources` (el PDF manda).
+
+        La precarga existía porque el modo se decidía después de redactar: se
+        mandaba toda la Escalera y se verificaba la respuesta a posteriori. Con
+        el modo final ya resuelto no hace falta, y con ella se va el bloque
+        "solo si ella lo pide", que era la causa 1 de las respuestas vagas: el
+        modelo tenía la cifra y una instrucción ambigua sobre cuándo decirla.
+
+        `intent` es la etiqueta de ESTE turno, no la del anterior. Los datos
+        condicionales (el monto facturado, la tasa) se habilitan en el turno en
+        que ella pregunta, que es lo que siempre debieron hacer: `previous_intent`
+        era un parche por tener la etiqueta demasiado tarde.
         """
         if state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False:
             return {}
@@ -227,9 +272,7 @@ class ConversationService:
         available = statement_intake.merge_sources(bank, state.statement, bank_period) | simulated
         if not available:
             return {}
-        sent = figures.fields_to_send(
-            state.mode, state.last_intent, state.installment_calc_requested
-        )
+        sent = fields_for_mode(state.mode, intent, state.installment_calc_requested)
         return {name: available[name] for name in sent if name in available}
 
     async def _receive_statement(
@@ -322,122 +365,45 @@ class ConversationService:
                 )
         return message, history_text
 
-    async def _call_agent(self, request: AgentRequest, timeout_s: float) -> AgentResponse:
+    async def _classify(self, request: ClassifyRequest, timeout_s: float) -> Classification:
         try:
-            return await asyncio.wait_for(self._agent.process(request), timeout=timeout_s)
+            return await asyncio.wait_for(self._agent.classify(request), timeout=timeout_s)
         except TimeoutError as exc:
-            raise IntegrationError(f"Agent timed out after {timeout_s:.1f}s") from exc
+            raise IntegrationError(f"Classify timed out after {timeout_s:.1f}s") from exc
         except Exception as exc:
-            raise IntegrationError("Agent failed") from exc
+            raise IntegrationError("Classify failed") from exc
 
-    async def _reanswer_on_mode_entry(
-        self,
-        state: ConversationState,
-        request: AgentRequest,
-        response: AgentResponse,
-        previous_mode: ConversationMode,
-        started: float,
-        ctx: str,
-    ) -> tuple[AgentRequest, AgentResponse]:
-        """Si el turno ENTRÓ a PAUSA_COMPRA o RETOMÓ desde un desvío, se pide de nuevo.
-
-        La transición ocurre después de que el agente responde: si ella dice
-        "me dan ganas de comprar en cuotas" en E0, el agente redactó en E0 y
-        las dos opciones de PAUSA_COMPRA llegarían un turno tarde. Se le vuelve
-        a preguntar una sola vez con el modo nuevo. La clasificación del turno
-        (etiqueta, evento, esencial) es la del primer llamado; del segundo solo
-        se usa la redacción. Si no queda tiempo o falla, queda la primera.
-        """
-        resumed = (
-            previous_mode in REANSWER_ON_RESUME_FROM and state.mode == ConversationMode.GREETING
-        )
-        crisis = (
-            response.intent == Intent.DISTRESS
-            or response.event is ConversationEvent.CRISIS_SUPPORT_NEEDED
-        )
-        if (
-            not (state.mode in REANSWER_ON_ENTRY or resumed)
-            or state.mode == previous_mode
-            or crisis  # un texto de crisis nunca se vuelve a redactar
-            or (response.protected_text and not resumed)
-        ):
-            return request, response
-        remaining = self._agent_timeout_s - (time.monotonic() - started)
-        if remaining < MIN_RETRY_S:
-            logger.info("No time to re-answer after entering mode=%s %s", state.mode, ctx)
-            return request, response
-
-        reentry = request.model_copy(
-            update={
-                "mode": state.mode,
-                "max_mode_reached": state.max_mode_reached,
-                "previous_intent": response.intent,
-                "financial_data": {},
-                "calculations": {},
-                "requested_installment_calculation": False,
-                "can_offer_continue": False,
-            }
-        )
+    async def _write(self, request: WriteRequest, timeout_s: float) -> AgentReply:
         try:
-            second = await self._call_agent(reentry, remaining)
-        except IntegrationError:
-            logger.warning("Re-answer failed, keeping first reply %s", ctx, exc_info=True)
-            return request, response
-        logger.info("Re-answered after entering mode=%s %s", state.mode, ctx)
-        return reentry, response.model_copy(
-            update={"message": second.message, "protected_text": second.protected_text}
-        )
+            return await asyncio.wait_for(self._agent.write(request), timeout=timeout_s)
+        except TimeoutError as exc:
+            raise IntegrationError(f"Write timed out after {timeout_s:.1f}s") from exc
+        except Exception as exc:
+            raise IntegrationError("Write failed") from exc
 
-    async def _enforce_mode_figures(
-        self,
+    @staticmethod
+    def _unexpected_figures(
         state: ConversationState,
-        request: AgentRequest,
-        response: AgentResponse,
-        started: float,
-        ctx: str,
-    ) -> str:
-        """Verificación posterior a la precarga.
+        request: WriteRequest,
+        reply: AgentReply,
+        own_message: str,
+    ) -> set[int]:
+        """Red de seguridad: montos que la respuesta no podía mencionar.
 
-        La respuesta solo puede traer montos de los campos del modo en que
-        terminó el turno, o montos que ella misma escribió. Si trae otros, se
-        reintenta una vez con solo los datos permitidos; si no hay tiempo o el
-        reintento tampoco cumple, sale un texto sin cifras.
+        Con el modo final resuelto, el redactor recibe exactamente los campos
+        que puede decir, así que esto ya no corrige un desajuste de orden: es
+        defensa en profundidad. Sin reintento — si salta, algo está mal arriba
+        y la respuesta no se envía.
         """
-        requested = request.requested_installment_calculation
-        fields = figures.allowed_fields(
-            [request.mode, state.mode], [response.intent, request.previous_intent], requested
+        if reply.protected_text:
+            return set()
+        own = [own_message]
+        if request.classification.mentioned_amount is not None:
+            own.append(str(request.classification.mentioned_amount))
+        permitidos = figures.allowed_amounts(
+            request.financial_data, list(request.financial_data), own, request.calculations
         )
-        own_amounts = [request.message] + (
-            [str(response.mentioned_amount)] if response.mentioned_amount is not None else []
-        )
-        allowed = figures.allowed_amounts(
-            request.financial_data, fields, own_amounts, request.calculations
-        )
-        if not figures.unexpected_amounts(response.message, allowed):
-            return response.message
-
-        logger.warning("Reply has figures outside mode=%s, retrying %s", state.mode, ctx)
-        remaining = self._agent_timeout_s - (time.monotonic() - started)
-        if remaining >= MIN_RETRY_S:
-            retry_request = request.model_copy(
-                update={
-                    "mode": state.mode,
-                    "max_mode_reached": state.max_mode_reached,
-                    "previous_intent": response.intent,
-                    "financial_data": {
-                        k: v for k, v in request.financial_data.items() if k in fields
-                    },
-                }
-            )
-            try:
-                retry = await self._call_agent(retry_request, remaining)
-            except IntegrationError:
-                logger.warning("Retry failed, sending step-by-step reply %s", ctx, exc_info=True)
-            else:
-                if retry.protected_text or not figures.unexpected_amounts(retry.message, allowed):
-                    return retry.message
-        logger.warning("Figures outside mode not resolved, sending step-by-step reply %s", ctx)
-        return STEP_BY_STEP_REPLY
+        return figures.unexpected_amounts(reply.message, permitidos)
 
     async def handle(self, message: IncomingMessage) -> str | None:
         """Devuelve la respuesta, o None si el mensaje ya fue procesado."""
@@ -468,8 +434,8 @@ class ConversationService:
             return voice
         message, history_text = voice
 
-        # AB8: a un acuse vacio se responde una vez; el siguiente no recibe
-        # respuesta. Ahorra una llamada al modelo y evita el bucle de cortesia.
+        # AB8: a un acuse vacío se responde una vez; el siguiente no recibe
+        # respuesta. Ahorra las dos llamadas al modelo y evita el bucle de cortesía.
         if transitions.es_acuse_vacio(message.body):
             if state.acknowledgement_answered:
                 logger.info("Empty acknowledgement, no reply (AB8) %s", ctx)
@@ -478,86 +444,143 @@ class ConversationService:
         else:
             state.acknowledgement_answered = False
 
-        # T10: si pidió simular un pago o el cálculo de una cuota, el modo se
-        # ajusta antes de llamar al agente, para que el resultado viaje ya.
-        simulation.plan_turn(state, message.body)
+        started = time.monotonic()
+        previous_mode = state.mode
+
+        # --- 1. CLASIFICAR -------------------------------------------------
+        # Esta llamada no recibe ninguna cifra. El historial va enmascarado por
+        # el agente antes de entrar al contexto.
+        # El plazo de este paso es su reserva, no el presupuesto del turno: lo
+        # que sobra es lo que necesita la redacción. El agente aplica la misma
+        # reserva hacia dentro (también a su modelo de respaldo); esto es el
+        # corte de afuera, para que una llamada colgada no se lleve el turno.
+        try:
+            classification = await self._classify(
+                ClassifyRequest(
+                    user_id=message.user_id,
+                    message=message.body,
+                    mode=state.mode,
+                    recent_history=state.history[-RECENT_HISTORY_MESSAGES:],
+                ),
+                min(self._classify_timeout_s, self._agent_timeout_s),
+            )
+        except IntegrationError:
+            # Sin etiqueta el turno no se puede resolver, pero sí se puede
+            # responder: el modo sigue como está y el redactor corta al texto
+            # de respaldo, que C validó. Antes esto subía al webhook y ella
+            # recibía "Perdona, tuve un problema para responderte", que no es
+            # una respuesta, es una disculpa.
+            logger.warning("Classify failed, answering with the mode text %s", ctx)
+            classification = Classification()
+
+        # --- 2. DECIDIR ----------------------------------------------------
+        apply_event(state, classification.event, message.message_sid)
+        self._apply_transition(state, classification)
+        if classification.intent == Intent.INSTALLMENT_INTENT:
+            state.installment_essential = classification.essential
+        if state.mode != ConversationMode.INSTALLMENT_PAUSE:
+            state.installment_calc_requested = False
+            state.installment_essential = None
+            state.installment_calc_shown = False
+
+        # T10: la simulación corre DESPUÉS de la transición, no antes. Antes
+        # tenía que adelantarse para que el cálculo viajara en el mismo turno,
+        # y eso la convertía en una segunda forma de cambiar el modo. El banco
+        # se consulta primero porque el mínimo vive ahí y "50 mil más" lo
+        # necesita para saber sobre qué suma.
         snapshot = await self._snapshot(state, ctx)
+        simulation.plan_turn(state, message.body, snapshot)
+        state.max_mode_reached = transitions.subir_maximo(state.max_mode_reached, state.mode)
         simulated, calculations = simulation.build_turn_figures(state, snapshot, message.body)
         if not calculations_allowed(state.mode, state.installment_calc_requested):
             calculations = {}
-        financial_data = self._financial_data(state, snapshot, simulated)
-        request = AgentRequest(
+        financial_data = self._financial_data(
+            state, snapshot, simulated, classification.intent
+        )
+
+        # --- 3. REDACTAR ---------------------------------------------------
+        write_request = WriteRequest(
             user_id=message.user_id,
             message=message.body,
             mode=state.mode,
             financial_data=financial_data,
+            calculations=calculations,
+            classification=classification,
             recent_history=state.history[-RECENT_HISTORY_MESSAGES:],
-            preferences=dict(state.preferences),
-            max_mode_reached=state.max_mode_reached,
-            previous_intent=state.last_intent,
             can_offer_continue=self._can_offer_continue(state),
             can_clarify_route=self._can_clarify_route(state),
             already_stated_limits=list(state.stated_limits),
-            calculations=calculations,
+            max_mode_reached=state.max_mode_reached,
             requested_installment_calculation=state.installment_calc_requested,
+            installment_calc_shown=state.installment_calc_shown,
+            opening_offer_made=state.opening_offer_made,
+            preferences=dict(state.preferences),
         )
-
-        started = time.monotonic()
-        response = await self._call_agent(request, self._agent_timeout_s)
-
-        previous_mode = state.mode
-        apply_event(state, response.event, message.message_sid)
-        self._apply_transition(state, response)
-        if response.intent == Intent.INSTALLMENT_INTENT:
-            state.installment_essential = response.essential
-        if state.mode != ConversationMode.INSTALLMENT_PAUSE:
+        # El cálculo de la cuota sale una vez, con el monto que ella dio. Desde
+        # el turno siguiente lo que falta es respetar lo que decida, no pedirle
+        # los mismos datos otra vez; una compra nueva vuelve a encender el
+        # pedido en `simulation.plan_turn`.
+        #
+        # Va después de armar el request, no antes: apagarlo antes se lo quita
+        # a ESTE turno, y `calculos_visibles` descartaba `cuota_mensual`
+        # justo en el turno que tenía que contarla.
+        if "minimo_con_cuota" in financial_data:
+            state.installment_calc_shown = True
             state.installment_calc_requested = False
-            state.installment_essential = None
-        request, response = await self._reanswer_on_mode_entry(
-            state, request, response, previous_mode, started, ctx
-        )
+        # Lo que queda del presupuesto del turno, sin piso: si clasificar se lo
+        # comió, redactar no alcanza y es mejor fallar ahora —el webhook tiene
+        # su texto de respaldo— que pasarse de la ventana de Twilio.
+        remaining = self._agent_timeout_s - (time.monotonic() - started)
+        reply_obj = await self._write(write_request, remaining)
 
-        reply = response.message
-        # Con la negativa activa no hay datos que verificar: la barrera de
-        # abajo reemplaza cualquier cifra.
-        if (
-            not response.protected_text
-            and state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is not False
-        ):
-            reply = await self._enforce_mode_figures(state, request, response, started, ctx)
+        reply = reply_obj.message
+        # La negativa explícita va primero: si ella pidió no ver cifras, la
+        # respuesta tiene que nombrar su pedido, no decirle "vamos de a poco".
+        #
         # `protected_text` marca los textos fijos que validó C: la línea de
         # crisis trae "*4141" y "131", que `contains_amount` lee como montos.
         # Sin esta guarda, un mensaje de ideación suicida recibía
         # NO_FIGURES_REPLY en vez de la línea de ayuda.
         if (
-            not response.protected_text
+            not reply_obj.protected_text
             and state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False
             and contains_amount(reply)
         ):
             logger.warning("Reply with figures blocked by user preference %s", ctx)
             reply = NO_FIGURES_REPLY
+        elif intrusos := self._unexpected_figures(
+            state, write_request, reply_obj, message.body
+        ):
+            logger.warning(
+                "Reply has figures outside mode=%s (%s) %s", state.mode, sorted(intrusos), ctx
+            )
+            reply = STEP_BY_STEP_REPLY
 
         state.history += [
             ConversationMessage(role="user", content=history_text),
             ConversationMessage(role="assistant", content=reply),
         ]
-        self._record_anti_loop(state, response, reply, previous_mode)
-        state.last_intent = response.intent
+        self._record_anti_loop(state, classification, reply)
+        state.last_intent = classification.intent
         state.turn_count += 1
-        progress.record_turn(state, previous_mode, reply, request, response.intent, response.event)
+        progress.record_turn(
+            state, previous_mode, reply, write_request, classification.intent,
+            classification.event,
+        )
         state.updated_at = utc_now()
         await self._repository.save(state)
 
         logger.info(
             "Turn processed %s turn=%d intent=%s event=%s mode=%s->%s "
-            "financial_fields=%d calculations=%d",
+            "financial_fields=%d calculations=%d elapsed_ms=%d",
             ctx,
             state.turn_count,
-            response.intent,
-            response.event,
+            classification.intent,
+            classification.event,
             previous_mode,
             state.mode,
             len(financial_data),
             len(calculations),
+            int((time.monotonic() - started) * 1000),
         )
         return reply

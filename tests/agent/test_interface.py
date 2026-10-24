@@ -7,40 +7,77 @@ from app.modules.agent.interface import (
     INSTALLMENT_CALC_FIELDS,
     PREF_SHOW_FINANCIAL_FIGURES,
     Agent,
-    AgentRequest,
-    AgentResponse,
+    AgentReply,
+    Classification,
+    ClassifyRequest,
     ConversationEvent,
     ConversationMessage,
     ConversationMode,
     FieldStatus,
     FinancialField,
     Intent,
+    WriteRequest,
     calculations_allowed,
     fields_for_mode,
 )
 
 
-def test_request_requires_mode() -> None:
+def _write(**kw) -> WriteRequest:
+    """Un `WriteRequest` con la clasificacion rellena.
+
+    El contrato la exige: sin clasificacion no hay turno que redactar. Los
+    tests que miran otros campos no tienen por que repetirla.
+    """
+    kw.setdefault("classification", Classification())
+    return WriteRequest(**kw)
+
+
+def test_classify_request_requires_mode() -> None:
     with pytest.raises(ValidationError):
-        AgentRequest(user_id="u1", message="Hola")  # falta mode
+        ClassifyRequest(user_id="u1", message="Hola")  # falta mode
 
 
-def test_request_defaults() -> None:
-    request = AgentRequest(user_id="u1", message="Hola", mode=ConversationMode.GREETING)
+def test_el_clasificador_no_tiene_donde_recibir_una_cifra() -> None:
+    """La garantia es por construccion, no por disciplina: `ClassifyRequest`
+    no tiene ningun campo donde quepa un monto, asi que esa llamada no puede
+    filtrar uno."""
+    campos = set(ClassifyRequest.model_fields)
+    assert campos == {"user_id", "message", "mode", "recent_history"}
+    assert not campos & {"financial_data", "calculations"}
+
+
+def test_write_request_requires_classification() -> None:
+    """El redactor no clasifica: si nadie clasifico, no hay turno que redactar."""
+    with pytest.raises(ValidationError):
+        WriteRequest(user_id="u1", message="Hola", mode=ConversationMode.GREETING)
+
+
+def test_write_request_defaults() -> None:
+    request = _write(
+        user_id="u1", message="Hola", mode=ConversationMode.GREETING,
+        classification=Classification(),
+    )
 
     assert request.recent_history == []
     assert request.financial_data == {}
+    assert request.calculations == {}
     assert request.preferences == {}
     assert request.can_offer_continue is False
     assert request.already_stated_limits == []
 
 
-def test_response_defaults() -> None:
-    response = AgentResponse(message="Hola")
+def test_reply_defaults() -> None:
+    response = AgentReply(message="Hola")
+    assert response.protected_text is False
 
-    assert response.intent == "UNKNOWN"
-    assert response.event is None
-    assert response.essential is None
+
+def test_classification_defaults() -> None:
+    clasificacion = Classification()
+
+    assert clasificacion.intent == "UNKNOWN"
+    assert clasificacion.event is None
+    assert clasificacion.essential is None
+    assert clasificacion.pace is None
 
 
 def test_invalid_role_is_rejected() -> None:
@@ -50,14 +87,21 @@ def test_invalid_role_is_rejected() -> None:
 
 def test_unknown_event_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        AgentResponse(message="x", event="NOT_AN_EVENT")
+        Classification(event="NOT_AN_EVENT")
+
+
+def test_unknown_pace_is_rejected() -> None:
+    """El ritmo es un enum chico a proposito: si el modelo inventa un valor,
+    se rechaza aca y no llega a convertirse en un movimiento."""
+    with pytest.raises(ValidationError):
+        Classification(pace="corriendo")
 
 
 def test_crisis_event_parses_from_string() -> None:
     """Sin este evento, angustia_fuerte (T05) no tiene ningun efecto
     persistente en el backend: el texto fijo saldria bien, pero el modo
     SUPPORT no quedaria registrado para los turnos siguientes."""
-    response = AgentResponse.model_validate({"message": "x", "event": "CRISIS_SUPPORT_NEEDED"})
+    response = Classification.model_validate({"event": "CRISIS_SUPPORT_NEEDED"})
 
     assert response.event is ConversationEvent.CRISIS_SUPPORT_NEEDED
 
@@ -79,7 +123,7 @@ def test_financial_field_absent_has_no_value() -> None:
 def test_minimal_injection_only_current_mode_fields_travel() -> None:
     # En E1 el agente no debe recibir el saldo ni el minimo: la inyeccion
     # minima es responsabilidad del backend (T06) al construir el request.
-    request = AgentRequest(
+    request = _write(
         user_id="u1",
         message="cuanto debo",
         mode=ConversationMode.DUE_DATE,
@@ -94,18 +138,23 @@ def test_minimal_injection_only_current_mode_fields_travel() -> None:
 
 def test_protocol_can_be_implemented_structurally() -> None:
     class EchoAgent:
-        async def process(self, request: AgentRequest) -> AgentResponse:
-            return AgentResponse(message=request.message)
+        async def classify(self, request: ClassifyRequest) -> Classification:
+            return Classification(intent=Intent.OFF_TOPIC)
+
+        async def write(self, request: WriteRequest) -> AgentReply:
+            return AgentReply(message=request.message)
 
     agent: Agent = EchoAgent()
-    request = AgentRequest(
+    request = _write(
         user_id="u1",
         message="Hola",
         mode=ConversationMode.GREETING,
         preferences={PREF_SHOW_FINANCIAL_FIGURES: False},
     )
 
-    assert asyncio.run(agent.process(request)).message == "Hola"
+    assert asyncio.run(agent.write(request)).message == "Hola"
+    clasificar = ClassifyRequest(user_id="u1", message="Hola", mode=ConversationMode.GREETING)
+    assert asyncio.run(agent.classify(clasificar)).intent == Intent.OFF_TOPIC
 
 
 # --- campos agregados en PR #4 -----------------------------------------
@@ -113,16 +162,18 @@ def test_protocol_can_be_implemented_structurally() -> None:
 def test_new_fields_have_backward_compatible_defaults() -> None:
     # Un request escrito antes de PR #4 sigue siendo valido: nadie que ya
     # use el contrato se rompe por estos campos.
-    request = AgentRequest(user_id="u1", message="Hola", mode=ConversationMode.GREETING)
+    request = _write(user_id="u1", message="Hola", mode=ConversationMode.GREETING)
 
     assert request.max_mode_reached is None
     assert request.calculations == {}
-    assert request.previous_intent is None
+    # `previous_intent` ya no existe: los datos condicionales se habilitan
+    # con la etiqueta de ESTE turno, que es lo que siempre debieron hacer.
+    assert "previous_intent" not in WriteRequest.model_fields
     assert request.requested_installment_calculation is False
 
 
 def test_max_mode_reached_accepts_a_mode() -> None:
-    request = AgentRequest(
+    request = _write(
         user_id="u1",
         message="hola, ya estoy mejor",
         mode=ConversationMode.GREETING,
@@ -135,7 +186,7 @@ def test_max_mode_reached_accepts_a_mode() -> None:
 def test_calculations_carries_simulator_output() -> None:
     # Las cifras del simulador (T10) llegan resueltas: el agente las
     # redacta, no las calcula.
-    request = AgentRequest(
+    request = _write(
         user_id="u1",
         message="y si pago 50 mil mas?",
         mode=ConversationMode.AMOUNT_SIMULATION,
@@ -145,15 +196,19 @@ def test_calculations_carries_simulator_output() -> None:
     assert request.calculations["months_with_extra"] == 43
 
 
-def test_previous_intent_enables_conditional_data() -> None:
-    request = AgentRequest(
-        user_id="u1",
-        message="y eso que significa?",
-        mode=ConversationMode.BALANCE_OVERVIEW,
-        previous_intent="pregunta_monto_facturado",
-    )
+def test_la_etiqueta_de_este_turno_habilita_los_datos_condicionales() -> None:
+    """`previous_intent` era un parche por tener la etiqueta demasiado tarde.
 
-    assert request.previous_intent == "pregunta_monto_facturado"
+    Con el turno en tres pasos la etiqueta se conoce antes de elegir los
+    datos, asi que el monto facturado se habilita en el turno en que ella
+    pregunta, no en el siguiente.
+    """
+    assert "previous_intent" not in WriteRequest.model_fields
+
+    campos = fields_for_mode(
+        ConversationMode.BALANCE_OVERVIEW, Intent.ASKS_BILLED_AMOUNT
+    )
+    assert "facturado" in campos
 
 
 # --- revisión de backend en #4: montos enteros -------------------------
@@ -180,7 +235,7 @@ def test_unreliable_field_keeps_both_amounts_as_integers() -> None:
 
 
 def test_calculations_and_mentioned_amount_are_integers() -> None:
-    request = AgentRequest(
+    request = _write(
         user_id="u1", message="50 mil mas",
         mode=ConversationMode.AMOUNT_SIMULATION,
         calculations={"meses_con_extra": 43},
@@ -188,15 +243,15 @@ def test_calculations_and_mentioned_amount_are_integers() -> None:
     assert isinstance(request.calculations["meses_con_extra"], int)
 
     with pytest.raises(ValidationError):
-        AgentResponse(message="x", mentioned_amount=59999.5)
+        Classification(mentioned_amount=59999.5)
 
 
 # --- revisión de backend en #4: etiquetas publicadas -------------------
 
-def test_the_sixteen_labels_are_published() -> None:
+def test_the_published_labels_are_the_contract() -> None:
     """El backend necesita nombrarlas para las transiciones de T06; como
     strings sueltos, un typo rompe una transición sin que nadie lo note."""
-    assert len(list(Intent)) == 16
+    assert len(list(Intent)) == 18
     assert Intent.DISTRESS == "angustia_fuerte"
     assert Intent.INSTALLMENT_INTENT == "intencion_compra_cuotas"
 
@@ -204,13 +259,22 @@ def test_the_sixteen_labels_are_published() -> None:
 def test_intent_stays_a_free_string_in_the_response() -> None:
     # Si el modelo inventa una etiqueta, se registra tal cual en la traza
     # en vez de reventar el turno.
-    assert AgentResponse(message="x", intent="algo_nuevo").intent == "algo_nuevo"
+    assert Classification(intent="algo_nuevo").intent == "algo_nuevo"
 
 
 # --- revisión de backend en #4: una sola tabla de campos por modo ------
 
 def test_fields_by_mode_is_the_single_source_of_truth() -> None:
     assert fields_for_mode(ConversationMode.GREETING) == []
+
+
+def test_reaccionar_o_no_entender_no_trae_ninguna_cifra() -> None:
+    """Ella ya vio sus cifras: repetirlas rompe AB6. Medido el 24 oct, en C02
+    el turno 4 ("mas alto de lo que pensaba") y el 5 ("no se") salian con las
+    tres cifras de nuevo."""
+    for etiqueta in (Intent.REACTS_TO_FIGURE, Intent.AMBIGUOUS):
+        assert fields_for_mode(ConversationMode.BALANCE_OVERVIEW, etiqueta) == [], etiqueta
+        assert fields_for_mode(ConversationMode.MINIMUM_BREAKDOWN, etiqueta) == [], etiqueta
     assert fields_for_mode(ConversationMode.DUE_DATE) == ["vencimiento"]
     assert "saldo" not in fields_for_mode(ConversationMode.DUE_DATE)
     for mode in (ConversationMode.PAUSE, ConversationMode.SUPPORT,

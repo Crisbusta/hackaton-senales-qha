@@ -30,10 +30,31 @@ def _settings(monkeypatch):
     return ajustes
 
 
-def test_the_fallback_model_gets_one_try(monkeypatch):
+def test_la_redaccion_no_tiene_modelo_de_respaldo(monkeypatch):
+    """Medido: en la redaccion el principal se cortaba a los 7 s y el respaldo
+    llevaba el turno a 9,7 s. Duplica el costo del paso mas caro justo cuando
+    ya no queda tiempo; el texto de respaldo del modo sale al instante y lo
+    valido C."""
     usados = []
 
-    def falla_el_principal(model, messages, temperature):
+    def falla(model, messages, temperature, schema=None, timeout=None):
+        usados.append(model)
+        raise APITimeoutError(request=None)
+
+    monkeypatch.setattr(client, "_call_one", falla)
+
+    with pytest.raises(IntegrationError):
+        client.call_model("sys", "ctx", schema=client.WRITE_SCHEMA)
+
+    assert usados == ["gpt-6.1-sol"]
+
+
+def test_the_fallback_model_gets_one_try(monkeypatch):
+    """Solo en la clasificacion: es la llamada corta y sin etiqueta no hay
+    turno que resolver."""
+    usados = []
+
+    def falla_el_principal(model, messages, temperature, schema=None, timeout=None):
         usados.append(model)
         if len(usados) == 1:
             raise APITimeoutError(request=None)
@@ -42,7 +63,7 @@ def test_the_fallback_model_gets_one_try(monkeypatch):
              "monto_mencionado": None, "mensaje": "ok"}))
 
     monkeypatch.setattr(client, "_call_one", falla_el_principal)
-    salida, metadata = client.call_model("sys", "ctx")
+    salida, metadata = client.call_model("sys", "ctx", schema=client.CLASSIFY_SCHEMA)
 
     assert usados == ["gpt-6.1-sol", "gpt-6-luna"]
     assert metadata["nombre"] == "gpt-6-luna"  # la traza dice cual respondio
@@ -55,7 +76,7 @@ def test_both_models_failing_is_an_integration_error(monkeypatch):
     monkeypatch.setattr(client, "_call_one", _timeout)
 
     with pytest.raises(IntegrationError):
-        client.call_model("sys", "ctx")
+        client.call_model("sys", "ctx", schema=client.CLASSIFY_SCHEMA)
 
 
 def test_a_response_that_is_not_json_is_an_integration_error(monkeypatch):
@@ -85,19 +106,23 @@ def test_the_client_has_a_short_timeout_and_no_internal_retries(monkeypatch):
 
 def test_the_fallback_is_skipped_when_it_would_not_fit(monkeypatch):
     """Llamar al respaldo cuando ya no cabe deja el turno fuera del
-    presupuesto y Twilio corta antes de que llegue la respuesta."""
-    # agent_timeout_s 8 - margen 1 = presupuesto 7: justo lo que gasta el
-    # primer intento, asi que el respaldo no cabe.
-    ajustes = Settings(openai_api_key="test", openai_timeout_s=7.0,
-                       agent_timeout_s=8.0)
+    presupuesto y Twilio corta antes de que llegue la respuesta.
+
+    La configuracion invalida ya no existe: `Settings` la rechaza al arrancar.
+    Lo que sigue siendo real es que el primer intento se alargue y no quede
+    tiempo, asi que eso es lo que se simula, con el reloj.
+    """
+    ajustes = Settings(openai_api_key="test")
     monkeypatch.setattr(client, "get_settings", lambda: ajustes)
     usados = []
+    reloj = iter([0.0, 100.0, 100.0, 100.0])
 
-    def falla(model, messages, temperature):
+    def falla(model, messages, temperature, schema=None, timeout=None):
         usados.append(model)
         raise APITimeoutError(request=None)
 
     monkeypatch.setattr(client, "_call_one", falla)
+    monkeypatch.setattr(client.time, "monotonic", lambda: next(reloj))
 
     with pytest.raises(IntegrationError):
         client.call_model("sys", "ctx")
@@ -129,3 +154,25 @@ def test_a_model_that_rejects_temperature_is_only_discovered_once(monkeypatch):
     # primer turno: con temperature (falla) y sin (ok). Los dos siguientes:
     # solo sin temperature.
     assert vistos == [True, False, False, False]
+
+
+def test_la_redaccion_lleva_techo_de_tokens_y_la_clasificacion_no(monkeypatch):
+    """Red de seguridad de latencia: la latencia es casi lineal en los tokens
+    y un turno que se desboca se come el presupuesto antes de cortarse. La
+    clasificacion no lo necesita --cuatro campos cortos-- y ahi un techo solo
+    agrega una forma de fallar."""
+    vistos = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            vistos.append(kwargs.get("max_completion_tokens"))
+            return FakeResponse(json.dumps({"mensaje": "ok", "etiqueta": "cierre",
+                                            "esencial": None, "monto_mencionado": None}))
+
+    fake = type("C", (), {"chat": type("Ch", (), {"completions": FakeCompletions()})})()
+    monkeypatch.setattr(client, "_get_client", lambda: fake)
+
+    client.call_model("sys", "ctx", schema=client.WRITE_SCHEMA)
+    client.call_model("sys", "ctx", schema=client.CLASSIFY_SCHEMA)
+
+    assert vistos == [Settings(openai_api_key="t").openai_max_output_tokens, None]

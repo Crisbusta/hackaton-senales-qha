@@ -54,12 +54,35 @@ def parse_amount(text: str) -> int | None:
     return max(amounts) if amounts else None
 
 
-def payment_amount(text: str) -> int | None:
-    """Monto de un pago que ella quiere simular: "¿y si pago 100 mil?"."""
+# "mas", "extra", "ademas del minimo": lo que ella nombra se SUMA al minimo,
+# no lo reemplaza. Sin esto, "¿y si pago 50 mil mas?" se simulaba como pagar
+# $50.000 en total, menos que el minimo de $74.350, y el resultado eran meses
+# "ahorrados" negativos y un mensaje que se contradecia.
+_SOBRE_EL_MINIMO = re.compile(
+    r"\b(mas|extra|adicional(es)?|ademas|encima|aparte|sobre el minimo)\b"
+)
+
+
+def es_sobre_el_minimo(text: str) -> bool:
+    """Si el monto que ella nombro se suma al minimo en vez de reemplazarlo."""
+    return bool(_SOBRE_EL_MINIMO.search(_normalize(text)))
+
+
+def payment_amount(text: str, minimum: int | None = None) -> int | None:
+    """Monto de un pago que ella quiere simular: "¿y si pago 100 mil?".
+
+    Con `minimum`, un monto dicho como "50 mil más" devuelve el total a
+    simular (el mínimo más lo que ella nombro).
+    """
     normalized = _normalize(text)
     if not _PAYMENT_CUE.search(normalized):
         return None
-    return parse_amount(normalized)
+    amount = parse_amount(normalized)
+    if amount is None:
+        return None
+    if minimum and es_sobre_el_minimo(normalized):
+        return minimum + amount
+    return amount
 
 
 def chose_installment_calculation(text: str) -> bool:
@@ -92,28 +115,56 @@ _SIMULATION_READY = (
 )
 
 
-def plan_turn(state: ConversationState, text: str) -> None:
-    """Ajusta el estado ANTES de llamar al agente, si ella pidió una simulación.
+def _cifra_del_estado_de_cuenta(state: ConversationState, campo: str):
+    """El valor que trae el PDF para ese campo, si es confiable.
+
+    El PDF manda sobre el banco en la conciliación (`merge_sources`), pero el
+    motor financiero calculaba solo con el banco: si el PDF corrigió el mínimo
+    o el saldo, la simulación se hacía con la cifra vieja. `UNRELIABLE` no
+    sirve —son dos valores en conflicto y no se elige ninguno—, así que ahí
+    manda el banco.
+    """
+    guardado = state.statement
+    if guardado is None:
+        return None
+    dato = guardado.fields.get(campo)
+    if dato is None or dato.status is not FieldStatus.CONFIRMED:
+        return None
+    return dato.value if isinstance(dato.value, int) else None
+
+
+def plan_turn(
+    state: ConversationState, text: str, snapshot: BankSnapshot | None = None
+) -> None:
+    """Ajusta el estado si ella pidió una simulación, antes de pedir la redacción.
 
     - "¿y si pago 100 mil?" desde E2-E4 → modo E4 con ese monto.
+    - "¿y si pago 50 mil más?" → el mínimo más esos $50.000, no $50.000.
     - En PAUSA_COMPRA, elegir la opción 2 → pidió el cálculo de la cuota
       (salvo que la compra sea esencial).
     """
     if state.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False:
         return
+    minimo = _cifra_del_estado_de_cuenta(state, "minimo") or (
+        snapshot.credit_cards[0].statement.minimum_payment
+        if snapshot and snapshot.credit_cards
+        else None
+    )
     ready = state.mode in _SIMULATION_READY or (
         state.mode in figures.LADDER_MODES and state.max_mode_reached in _SIMULATION_READY
     )
     if ready:
-        amount = payment_amount(text)
+        amount = payment_amount(text, minimo)
         if amount:
             state.chosen_payment = amount
             state.mode = ConversationMode.AMOUNT_SIMULATION
-    if (
-        state.mode == ConversationMode.INSTALLMENT_PAUSE
-        and state.installment_essential is not True
-        and chose_installment_calculation(text)
-    ):
+    if state.mode == ConversationMode.INSTALLMENT_PAUSE and (
+        state.installment_essential is not True
+    ) and (chose_installment_calculation(text) or installment_purchase(text)):
+        # Dar el monto y las cuotas es pedir el cálculo, igual que elegir la
+        # opción 2. Así el flag se puede apagar cuando el cálculo ya salió
+        # —desde ahí lo que falta es respetar lo que decida, no volver a
+        # pedirle los mismos datos— y una compra nueva lo vuelve a encender.
         state.installment_calc_requested = True
 
 
@@ -138,6 +189,9 @@ def build_turn_figures(
         return {}, {}
     card = snapshot.credit_cards[0]
     statement = card.statement
+    # El PDF manda: si trae el saldo o el mínimo, el motor calcula con esos.
+    deuda = _cifra_del_estado_de_cuenta(state, "saldo") or card.total_debt
+    minimo = _cifra_del_estado_de_cuenta(state, "minimo") or statement.minimum_payment
     fields: dict[str, FinancialField] = {}
     calculations: dict[str, int] = {}
 
@@ -145,7 +199,7 @@ def build_turn_figures(
         chosen = state.chosen_payment
         fields["monto_elegido"] = _confirmed(chosen)
         comparison = compare_with_minimum(
-            card.total_debt, statement.monthly_rate_pct, chosen, statement.minimum_payment
+            deuda, statement.monthly_rate_pct, chosen, minimo
         )
         calculations |= _payoff("monto_elegido", comparison.chosen)
         calculations |= _payoff("minimo", comparison.minimum_only)
@@ -155,7 +209,7 @@ def build_turn_figures(
         if comparison.chosen.months is None:
             # El monto no alcanza a cubrir los intereses: se informa cuánto son.
             calculations["intereses_del_mes"] = int(
-                (card.total_debt * statement.monthly_rate_pct / 100).to_integral_value()
+                (deuda * statement.monthly_rate_pct / 100).to_integral_value()
             )
         months = monthly_cashflow(snapshot.transactions)
         if months:
@@ -168,7 +222,7 @@ def build_turn_figures(
     if state.mode == ConversationMode.INSTALLMENT_PAUSE and state.installment_calc_requested:
         purchase = installment_purchase(text)
         if purchase:
-            effect = installment_effect(statement.minimum_payment, *purchase)
+            effect = installment_effect(minimo, *purchase)
             fields["minimo_con_cuota"] = _confirmed(effect.new_minimum)
             calculations["cuota_mensual"] = effect.monthly_installment
 

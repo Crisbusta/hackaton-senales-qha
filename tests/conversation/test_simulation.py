@@ -6,13 +6,15 @@ import pytest
 
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
-    AgentResponse,
+    AgentReply,
     ConversationMode,
     Intent,
+    WriteRequest,
 )
 from app.modules.banking.provider import MockBankProvider
+from app.modules.conversation import simulation
 from app.modules.conversation.repository import InMemoryConversationRepository
+from app.modules.conversation.schemas import ConversationState
 from app.modules.conversation.service import ConversationService
 from app.modules.conversation.simulation import (
     chose_installment_calculation,
@@ -20,24 +22,20 @@ from app.modules.conversation.simulation import (
     payment_amount,
 )
 from app.modules.whatsapp.schemas import IncomingMessage
+from tests.conftest import TwoStepAgent, turno
 
 USER_ID = "+56912345678"
 
 
-class SpyAgent:
-    def __init__(self, *responses: AgentResponse) -> None:
-        self.responses = list(responses)
-        self.requests: list[AgentRequest] = []
-
-    async def process(self, request: AgentRequest) -> AgentResponse:
-        self.requests.append(request)
-        return self.responses.pop(0) if self.responses else AgentResponse(message="ok")
+class SpyAgent(TwoStepAgent):
+    """El doble compartido de `conftest`, con el nombre que ya usaban estos
+    tests. Recibe pares (Classification, AgentReply): usa `turno()`."""
 
 
 class Conversation:
     """Varios turnos sobre el mismo estado, con el banco de Patricia."""
 
-    def __init__(self, *responses: AgentResponse, mode=ConversationMode.GREETING, **state):
+    def __init__(self, *responses: AgentReply, mode=ConversationMode.GREETING, **state):
         self.agent = SpyAgent(*responses)
         self.repo = InMemoryConversationRepository()
         seeded = asyncio.run(self.repo.get(USER_ID))
@@ -62,7 +60,7 @@ class Conversation:
         return asyncio.run(self.service.handle(incoming))
 
     @property
-    def last_request(self) -> AgentRequest:
+    def last_request(self) -> WriteRequest:
         return self.agent.requests[-1]
 
     @property
@@ -132,7 +130,7 @@ def test_payment_question_moves_to_e4_with_results_in_the_same_turn() -> None:
 
 def test_simulation_figures_pass_the_final_check() -> None:
     reply = "Pagando $100.000 al mes terminas en 13 meses y te ahorras $97.662 en intereses."
-    chat = Conversation(AgentResponse(message=reply), mode=ConversationMode.BALANCE_OVERVIEW)
+    chat = Conversation(turno(reply), mode=ConversationMode.BALANCE_OVERVIEW)
 
     assert chat.send("¿y si pago 100 mil?") == reply
     assert len(chat.agent.requests) == 1
@@ -178,18 +176,41 @@ def test_installment_option_two_then_amount_gives_new_minimum() -> None:
     assert chat.last_request.requested_installment_calculation is True
 
     reply = "Serían $10.000 al mes; tu mínimo pasaría de $74.350 a unos $84.350."
-    chat.agent.responses.append(AgentResponse(message=reply))
+    chat.agent.turns.append(turno(reply))
     assert chat.send("$60.000 en 6 cuotas") == reply
 
     request = chat.last_request
     assert request.financial_data["minimo"].value == 74_350
     assert request.financial_data["minimo_con_cuota"].value == 84_350
     assert request.calculations == {"cuota_mensual": 10_000}
+    # El pedido se apaga DESPUES de este turno, no antes: el agente filtra
+    # `cuota_mensual` con este flag (`prompts.calculos_visibles`), asi que
+    # apagarlo antes deja sin la cifra justo al turno que tiene que contarla.
+    assert request.requested_installment_calculation is True
+    assert chat.state.installment_calc_shown is True
+    assert chat.state.installment_calc_requested is False
+
+
+def test_despues_del_calculo_el_turno_siguiente_no_trae_cifras() -> None:
+    """C05 turno 4: ella ya dio el monto y ya vio la cuota. Lo que falta es
+    respetar lo que decida, y para eso el turno no necesita ningun dato."""
+    chat = Conversation(mode=ConversationMode.INSTALLMENT_PAUSE)
+
+    chat.send("2")
+    chat.agent.turns.append(turno("Serían $10.000 al mes."))
+    chat.send("$60.000 en 6 cuotas")
+    chat.agent.turns.append(turno("La decisión es tuya."))
+    chat.send("igual la voy a comprar")
+
+    request = chat.last_request
+    assert request.installment_calc_shown is True
+    assert request.financial_data == {}
+    assert request.calculations == {}
 
 
 def test_essential_purchase_gets_no_calculation() -> None:
     chat = Conversation(
-        AgentResponse(message="ok", intent=Intent.INSTALLMENT_INTENT, essential=True),
+        turno("ok", intent=Intent.INSTALLMENT_INTENT, essential=True),
         mode=ConversationMode.GREETING,
     )
 
@@ -202,8 +223,8 @@ def test_essential_purchase_gets_no_calculation() -> None:
 
 def test_leaving_the_installment_pause_resets_the_request() -> None:
     chat = Conversation(
-        AgentResponse(message="ok"),
-        AgentResponse(message="ok", intent=Intent.VOLUNTARY_RESUME),
+        turno("ok"),
+        turno("ok", intent=Intent.VOLUNTARY_RESUME),
         mode=ConversationMode.INSTALLMENT_PAUSE,
     )
 
@@ -211,3 +232,48 @@ def test_leaving_the_installment_pause_resets_the_request() -> None:
     chat.send("mejor no, sigamos con lo otro")
 
     assert chat.state.installment_calc_requested is False
+
+
+# --- "50 mil mas" se suma al minimo (B6) --------------------------------
+
+
+def test_un_monto_sobre_el_minimo_se_suma_no_reemplaza():
+    """Medido: `payment_amount("¿y si pago 50 mil más?")` devolvia 50.000 y se
+    simulaba como el pago total. Con el minimo en $74.350, pagar $50.000 da
+    meses "ahorrados" negativos y un mensaje que se contradice."""
+    assert payment_amount("y si pago 50 mil mas que el minimo?", 74350) == 124350
+    assert payment_amount("y si abono 50 mil extra?", 74350) == 124350
+    assert payment_amount("y si pago 20 mil adicionales?", 74350) == 94350
+
+
+def test_un_monto_a_secas_sigue_siendo_el_total():
+    assert payment_amount("y si pago 100 mil?", 74350) == 100000
+    assert payment_amount("y si pago 100 mil?") == 100000
+
+
+def test_sin_el_minimo_no_se_puede_sumar_y_se_toma_tal_cual():
+    """Sin banco no hay minimo: se devuelve lo que ella dijo, no se inventa."""
+    assert payment_amount("y si pago 50 mil mas?") == 50000
+
+
+# --- B11: el calculo de la cuota sale una vez -------------------------
+
+
+def test_dar_el_monto_y_las_cuotas_tambien_pide_el_calculo() -> None:
+    """Para poder apagar el pedido cuando el calculo ya salio, darlo tiene que
+    volver a encenderlo: si no, una compra nueva llegaria sin calculo."""
+    state = ConversationState(user_id="u", mode=ConversationMode.INSTALLMENT_PAUSE)
+
+    simulation.plan_turn(state, "60 mil en 6 cuotas")
+
+    assert state.installment_calc_requested is True
+
+
+def test_una_compra_esencial_no_pide_el_calculo() -> None:
+    state = ConversationState(
+        user_id="u", mode=ConversationMode.INSTALLMENT_PAUSE, installment_essential=True
+    )
+
+    simulation.plan_turn(state, "60 mil en 6 cuotas")
+
+    assert state.installment_calc_requested is False

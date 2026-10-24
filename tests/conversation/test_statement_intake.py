@@ -8,10 +8,12 @@ import pytest
 
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
-    AgentResponse,
+    AgentReply,
+    Classification,
+    ConversationEvent,
     FieldStatus,
     FinancialField,
+    Intent,
 )
 from app.modules.banking.provider import MockBankProvider
 from app.modules.conversation import statement_intake
@@ -31,11 +33,21 @@ MEDIA_URL = "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/M
 
 class SpyAgent:
     def __init__(self) -> None:
-        self.requests: list[AgentRequest] = []
+        self.requests = []
 
-    async def process(self, request: AgentRequest) -> AgentResponse:
+    async def classify(self, request):
+        # Pedir un dato sube el escalon, que es lo que estos tests necesitan
+        # para ver datos en el contexto.
+        if "?" in request.message:
+            return Classification(
+                intent=Intent.INFO_REQUEST,
+                event=ConversationEvent.REQUESTED_BALANCE,
+            )
+        return Classification(intent=Intent.OFF_TOPIC)
+
+    async def write(self, request):
         self.requests.append(request)
-        return AgentResponse(message="ok")
+        return AgentReply(message="ok")
 
 
 class FakeFetcher:
@@ -105,9 +117,11 @@ def test_next_turn_uses_the_statement_as_a_source() -> None:
     send(service, content_type="application/pdf", sid="SM1")
     send(service, body="¿cuándo vence?", sid="SM2")
 
+    # "¿cuándo vence?" sube a E1, y E1 manda exactamente el vencimiento: el
+    # resto de la Escalera ya no viaja de arrastre (se fue la precarga).
     data = agent.requests[0].financial_data
+    assert set(data) == {"vencimiento"}
     assert data["vencimiento"].value == "3 de noviembre de 2026"
-    assert data["minimo"].value == 74350
 
 
 def test_statement_and_bank_agree_for_patricia() -> None:
@@ -216,6 +230,39 @@ def test_without_statement_the_bank_is_used_as_is() -> None:
     assert statement_intake.merge_sources(bank, None) == bank
 
 
+# --- B10: el motor financiero usa el PDF, no solo el banco --------------
+
+
+def test_el_simulador_calcula_con_la_cifra_del_pdf() -> None:
+    """El PDF manda en la conciliacion, pero el motor calculaba solo con el
+    banco: si el PDF corrigio el minimo, la simulacion se hacia con el viejo."""
+    from app.modules.agent.interface import FieldStatus, FinancialField
+    from app.modules.conversation.schemas import ConversationState, StoredStatement
+    from app.modules.conversation.simulation import _cifra_del_estado_de_cuenta
+
+    state = ConversationState(user_id=USER_ID)
+    assert _cifra_del_estado_de_cuenta(state, "minimo") is None  # sin PDF, manda el banco
+
+    state.statement = StoredStatement(
+        fields={"minimo": FinancialField(value=80000, status=FieldStatus.CONFIRMED)}
+    )
+    assert _cifra_del_estado_de_cuenta(state, "minimo") == 80000
+
+
+def test_una_cifra_en_conflicto_no_la_usa_el_simulador() -> None:
+    """`UNRELIABLE` son dos valores que no coinciden y no se elige ninguno:
+    calcular con uno de ellos seria inventar."""
+    from app.modules.agent.interface import FieldStatus, FinancialField
+    from app.modules.conversation.schemas import ConversationState, StoredStatement
+    from app.modules.conversation.simulation import _cifra_del_estado_de_cuenta
+
+    state = ConversationState(user_id=USER_ID)
+    state.statement = StoredStatement(
+        fields={"minimo": FinancialField(value=[80000, 74350], status=FieldStatus.UNRELIABLE)}
+    )
+    assert _cifra_del_estado_de_cuenta(state, "minimo") is None
+
+
 # --- Períodos distintos (bug visto en producción: PDF de septiembre + banco de octubre) ---
 
 
@@ -223,13 +270,18 @@ def test_an_older_statement_does_not_override_current_bank_data() -> None:
     agent, repo, service = setup(fetcher=FakeFetcher(AUGUST_PDF), bank=MockBankProvider("patricia"))
 
     reply = send(service, content_type="application/pdf", sid="SM1")
+    # Dos preguntas: cada una sube un escalon, y el minimo solo viaja en E2.
+    # Antes bastaba una porque la precarga mandaba toda la Escalera en cada
+    # turno; ahora el turno recibe exactamente los campos de su modo.
     send(service, body="¿cuándo vence?", sid="SM2")
+    send(service, body="¿y el mínimo?", sid="SM3")
 
     assert reply == statement_intake.RECEIVED_OLDER_REPLY.format(mes="agosto", mes_actual="octubre")
-    data = agent.requests[0].financial_data
-    assert data["vencimiento"] == field("3 de noviembre de 2026")  # el del banco, vigente
-    assert data["minimo"] == field(74350)
-    assert all(f.status is FieldStatus.CONFIRMED for f in data.values())
+    en_e1 = agent.requests[0].financial_data
+    assert en_e1["vencimiento"] == field("3 de noviembre de 2026")  # el del banco, vigente
+    en_e2 = agent.requests[1].financial_data
+    assert en_e2["minimo"] == field(74350)
+    assert all(f.status is FieldStatus.CONFIRMED for f in (en_e1 | en_e2).values())
     assert state_of(repo).timeline[0].intent == "pdf_ok_older_than_bank"  # el turno del PDF
 
 

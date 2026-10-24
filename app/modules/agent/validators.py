@@ -1,4 +1,4 @@
-"""Los cinco chequeos deterministas sobre cada salida del modelo (T05).
+"""Los siete chequeos deterministas sobre cada salida del modelo (T05).
 
 No depende del SDK, de la red ni del contrato de T02: se le pasa el dict ya
 parseado. Por eso se puede probar completo antes de que exista el repo.
@@ -9,6 +9,8 @@ Orden de los chequeos, el primero que falla corta:
   3. forma (frases, preguntas, largo, markdown)
   4. movimientos (oferta de seguir cuando no corresponde)
   5. coherencia_etiqueta_modo
+  6. sin_4141_en_cuidadora_agotada
+  7. fuga_de_andamiaje (nombres de bloque o de campo en la respuesta)
 
 Politica de fallo: un reintento nombrando el chequeo. Si el segundo intento
 tambien falla, sale el texto de respaldo del modo. En angustia_fuerte y
@@ -19,8 +21,6 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
-from app.modules.agent.interface import fields_for_mode
-from app.modules.agent.prompts import ESCALONES
 from app.modules.agent.texts import (
     CIERRE_OFERTA,
     ETIQUETAS_TEXTO_FIJO,
@@ -50,6 +50,11 @@ RE_NUMERO = re.compile(r"\d{1,3}(?:[.\s]\d{3})+|\d+(?:,\d+)?")
 RE_OPCION = re.compile(r"(?m)^\s*[123][.)]\s")
 RE_VINETA = re.compile(r"(?m)^\s*[-*•]\s")
 RE_OFERTA = re.compile(r"seguimos|lo dejamos (aqui|aca)")
+# Una opcion numerada no es una frase: la linea entera sale antes de contar.
+# Quitar solo el prefijo "1." no alcanza, porque el texto de cada opcion
+# tambien termina en punto: medido el 23 oct, las dos opciones de PAUSA_COMPRA
+# dan 6 frases, 4 sin el prefijo y 2 sin la linea.
+RE_LINEA_OPCION = re.compile(r"(?m)^\s*[123][.)].*$")
 
 
 def normalizar(texto):
@@ -84,37 +89,14 @@ def enmascarar_numeros(texto):
     return RE_NUMERO.sub("N", texto.replace("*4141", "N"))
 
 
-def campos_autorizados(datos, modo, etiqueta, pidio_calculo_cuota=False):
-    """Los campos cuyas cifras el modelo puede usar en ESTE turno.
-
-    La regla es una sola: se autoriza lo que el contexto le MOSTRO. Es lo
-    que hace verdadero el docstring de `numeros_permitidos`, y lo que evita
-    que la capa 4 acepte una cifra que el modelo no vio.
-
-    En los escalones eso incluye el segundo bloque de DATOS_DISPONIBLES
-    ("solo si ella lo pide en este mensaje"), porque ahi la precarga del #12
-    si se lo muestra. Quien verifica que la respuesta corresponda al modo en
-    que TERMINO el turno es el backend (`conversation.figures`), que conoce
-    el modo final; el agente no puede, porque el modo se decide con la
-    etiqueta que el agente acaba de producir. Medido el 23 oct: con la
-    regla anterior, a "cuando vence?" en E0 el modelo contestaba bien
-    ("vence el 3 de noviembre de 2026") y la lista blanca lo descartaba.
-
-    Fuera de los escalones no hay segundo bloque: en las pausas, APOYO y
-    CIERRE se autoriza unicamente lo que el modo admite, que es nada. Esa
-    parte no se relaja, y es la que sostiene C01 y C10.
-    """
-    if modo in ESCALONES:
-        return dict(datos or {})
-    permitidos = fields_for_mode(modo, etiqueta, pidio_calculo_cuota)
-    return {k: v for k, v in (datos or {}).items() if k in permitidos}
-
-
 def numeros_permitidos(datos, motor=None):
-    """Toda cifra de los campos autorizados mas la salida del motor T10.
+    """Toda cifra de los datos inyectados mas la salida del motor T10.
 
-    `datos` tiene que venir ya filtrado por `campos_autorizados`: esta
-    funcion no sabe en que modo esta y autoriza todo lo que recibe.
+    Autoriza todo lo que recibe, y eso ahora es correcto: con el turno en tres
+    pasos, el redactor recibe exactamente los campos del modo final. Antes
+    hacia falta `campos_autorizados()` para volver a filtrar por modo y por
+    etiqueta, porque la precarga mandaba toda la Escalera y el modo se decidia
+    despues. Ese filtro desaparecio con el orden.
     """
     permitidos = set(NUMEROS_SIEMPRE_PERMITIDOS)
     for campo in (datos or {}).values():
@@ -164,9 +146,43 @@ def chequeo_frases_prohibidas(mensaje):
 
 
 def contar_frases(mensaje):
-    enmascarado = enmascarar_numeros(mensaje)
+    enmascarado = enmascarar_numeros(RE_LINEA_OPCION.sub("", mensaje))
     partes = [p for p in re.split(r"[.?!…]+", enmascarado) if p.strip()]
     return len(partes)
+
+
+def _enmascarar_misma_longitud(texto):
+    """Como `enmascarar_numeros`, pero sin mover ninguna posicion."""
+    return RE_NUMERO.sub(lambda m: "N" * len(m.group(0)), texto)
+
+
+def recortar_a_tres_frases(mensaje):
+    """Las primeras MAX_FRASES frases, con sus opciones numeradas.
+
+    Cuando la respuesta falla SOLO por largo, descartarla entera cambia una
+    respuesta buena de mas por un texto de relleno que no dice nada ("Dejame
+    ordenarlo bien antes de contartelo"). Recortar conserva lo que ella
+    pidio. Las lineas de opcion no se cortan: no son frases y van completas.
+    """
+    lineas = mensaje.splitlines()
+    opciones = [ln for ln in lineas if RE_LINEA_OPCION.match(ln)]
+    prosa = " ".join(ln for ln in lineas if not RE_LINEA_OPCION.match(ln)).strip()
+
+    partes, resto = [], prosa
+    for _ in range(MAX_FRASES):
+        # Se enmascara preservando el largo: los puntos de miles no son fin de
+        # frase, y los indices tienen que calzar con el texto original.
+        corte = re.search(r"[.?!…]", _enmascarar_misma_longitud(resto))
+        if not corte:
+            break
+        partes.append(resto[: corte.end()].strip())
+        resto = resto[corte.end():].strip()
+    if not partes:
+        partes = [resto]
+    recortado = " ".join(p for p in partes if p).strip()
+    if opciones:
+        recortado = "\n".join([recortado, *opciones])
+    return recortado[:MAX_CARACTERES].strip()
 
 
 def chequeo_forma(mensaje):
@@ -191,23 +207,91 @@ def chequeo_forma(mensaje):
 MODOS_CON_OFERTA = ("E1", "E2", "E3")
 
 
+def es_oferta_de_continuar(mensaje):
+    """Si la respuesta ofrece seguir mirando.
+
+    La usan los dos lados: el validador para rechazar la oferta cuando AB2 ya
+    la consumio, y el backend para consumir el contador. Estaban separados —el
+    backend miraba `"seguimos" in reply.lower()`— y ampliar uno solo deja la
+    asimetria peor: rechaza mas formas sin consumir el contador.
+    """
+    return bool(RE_OFERTA.search(normalizar(mensaje)))
+
+
 def chequeo_movimientos(mensaje, estado):
     if estado.get("modo") not in MODOS_CON_OFERTA:
         return True, None
-    ofrece = bool(RE_OFERTA.search(normalizar(mensaje)))
-    if ofrece and not estado.get("puedes_ofrecer_continuar", False):
+    if estado.get("puedes_aclarar_ruta"):
+        # Las opciones numeradas llevan la salida escrita "o lo dejamos aqui"
+        # porque C la pidio asi, y `RE_OFERTA` no distingue esa salida de la
+        # oferta de seguir. Medido el 24 oct en C02 turno 5: el turno de
+        # aclaracion se rechazaba siempre y salia el texto de respaldo.
+        return True, None
+    if es_oferta_de_continuar(mensaje) and not estado.get("puedes_ofrecer_continuar", False):
         return False, "ofrece seguir con la oferta ya usada en este escalon (AB2)"
     return True, None
 
 
+# Modos sin ninguna cifra ni fecha. Las dos pausas y el cierre estaban fuera:
+# la lista blanca numerica ya atrapaba los montos (con datos vacios no autoriza
+# ninguno), pero el nombre de un mes pasaba. PAUSA_COMPRA no esta porque si
+# ella pidio el calculo de la cuota, ahi si viajan dos cifras.
+MODOS_SIN_CIFRAS = ("APOYO", "PAUSA_RECHAZO", "CIERRE")
+
+
 def chequeo_coherencia_etiqueta_modo(mensaje, estado):
-    if estado.get("modo") != "APOYO":
+    modo = estado.get("modo")
+    if modo not in MODOS_SIN_CIFRAS:
         return True, None
     if extraer_numeros(mensaje):
-        return False, "cifra en modo APOYO"
+        return False, f"cifra en modo {modo}"
     plano = normalizar(mensaje)
     if any(m in plano for m in MESES):
-        return False, "fecha en modo APOYO"
+        return False, f"fecha en modo {modo}"
+    return True, None
+
+
+# Nombres de bloque y de campo del contexto. Si aparecen en la respuesta, el
+# modelo esta repitiendo el andamiaje en vez de hablarle a Patricia.
+ANDAMIAJE = (
+    "datos que puedes decir",
+    "lo que tienes que hacer",
+    "los dos ultimos turnos",
+    "mensaje de patricia",
+    "datos_disponibles",
+    "movimientos permitidos",
+    "monto_elegido",
+    "minimo_con_cuota",
+    "minimo_intereses",
+    "minimo_cuotas",
+    "minimo_abono",
+    "meses_ahorrados",
+    "intereses_ahorrados",
+    "intereses_del_mes",
+    "faltante_para_gastos_esenciales",
+    "cuota_mensual",
+)
+
+# Los tres estados de un campo ("confirmado", "no confiable", "ausente") NO
+# estan en la lista. Son espanol corriente: medido el 24 oct, el modelo
+# escribio "No tengo confirmado el monto de la cuota mensual", una frase
+# correcta que el chequeo rechazaba. La fuga que si existia --"Tu pago minimo
+# confirmado es $74.350"-- se corrigio en el origen: el bloque de datos ya no
+# anota el estado cuando es el normal (ver `prompts._formatear_valor`).
+
+
+def chequeo_fuga_de_andamiaje(mensaje):
+    """Que el modelo no le lea el contexto a Patricia.
+
+    Ella no tiene por que saber que existe un bloque llamado "DATOS QUE
+    PUEDES DECIR" ni un campo llamado `minimo_con_cuota`. Un nombre tecnico en
+    la respuesta es una fuga del andamiaje, y con el contexto resuelto hay mas
+    encabezados en texto plano que antes.
+    """
+    plano = normalizar(mensaje)
+    encontrados = [n for n in ANDAMIAJE if n in plano]
+    if encontrados:
+        return False, "andamiaje en la respuesta: " + ", ".join(encontrados)
     return True, None
 
 
@@ -231,7 +315,29 @@ NOMBRES = (
     "movimientos",
     "coherencia_etiqueta_modo",
     "sin_4141_en_cuidadora_agotada",
+    "fuga_de_andamiaje",
 )
+
+
+# El detalle de la lista blanca nombra las cifras intrusas ("cifras no
+# inyectadas: 84350"), asi que devolverselo al modelo le repite el numero que
+# no debia usar. Para ese chequeo la correccion va sin el detalle.
+_SIN_DETALLE = ("lista_blanca_numerica",)
+
+
+def _correccion(nombre, detalle):
+    """El texto del reintento, nombrando el chequeo que fallo."""
+    if nombre in _SIN_DETALLE:
+        motivo = (
+            "usaste una cifra que no esta en DATOS QUE PUEDES DECIR. Reescribela "
+            "con las cifras de ese bloque y ninguna otra"
+        )
+    else:
+        motivo = f"falla en {nombre} ({detalle})"
+    return (
+        f"Tu respuesta anterior {motivo}. Reescribela respetando LO QUE TIENES "
+        "QUE HACER."
+    )
 
 
 @dataclass
@@ -271,17 +377,16 @@ def respaldo_sin_modelo(estado, motivo):
     )
 
 
-def validar(salida, estado, datos, motor=None, intento=1, pidio_calculo_cuota=False):
-    """salida: el dict de cuatro campos del modelo. estado/datos: lo inyectado.
+def validar(salida, estado, datos, motor=None, intento=1):
+    """salida: la etiqueta del turno y el mensaje redactado. datos: lo inyectado.
 
-    `datos` puede traer campos precargados que este turno no autoriza (#12);
-    la lista blanca numerica se arma solo con los que si, segun el modo y la
-    etiqueta que el modelo acaba de emitir.
+    `datos` llega exacto —son los campos del modo final—, asi que la lista
+    blanca numerica se arma con todos ellos y no hace falta volver a filtrar.
     """
     etiqueta = salida.get("etiqueta")
     mensaje = salida.get("mensaje") or ""
     modo = estado.get("modo", "E0")
-    autorizados = campos_autorizados(datos, modo, etiqueta, pidio_calculo_cuota)
+    autorizados = dict(datos or {})
 
     # Capa 3: la prosa no se mira, se descarta.
     if etiqueta == "angustia_fuerte" and modo == "APOYO":
@@ -315,6 +420,7 @@ def validar(salida, estado, datos, motor=None, intento=1, pidio_calculo_cuota=Fa
         lambda: chequeo_movimientos(mensaje, estado),
         lambda: chequeo_coherencia_etiqueta_modo(mensaje, estado),
         lambda: chequeo_sin_4141_en_cuidadora_agotada(mensaje, etiqueta),
+        lambda: chequeo_fuga_de_andamiaje(mensaje),
     )
 
     validadores = {}
@@ -327,13 +433,28 @@ def validar(salida, estado, datos, motor=None, intento=1, pidio_calculo_cuota=Fa
         validadores[nombre] = "falla"
         for pendiente in NOMBRES[len(validadores):]:
             validadores[pendiente] = "no_evaluado"
+
+        # Si lo unico que sobra son frases, las primeras tres suelen ser una
+        # respuesta valida: recortarlas conserva lo que ella pidio, y el texto
+        # de respaldo no dice nada. Se re-valida el recorte, porque recortar no
+        # puede introducir otra falla.
+        if nombre == "forma" and "frases >" in (detalle or ""):
+            recorte = recortar_a_tres_frases(mensaje)
+            ok_recorte, _ = chequeo_forma(recorte)
+            if ok_recorte and chequeo_frases_prohibidas(recorte)[0]:
+                validadores[nombre] = "recortado"
+                return Resultado(
+                    enviado=recorte,
+                    validadores=validadores,
+                    override={"aplicado": False, "motivo": "recortado_a_tres_frases"},
+                )
+
         if intento == 1:
             return Resultado(
                 enviado=None,
                 validadores=validadores,
                 override={"aplicado": False, "motivo": None},
-                correccion=f"Tu respuesta anterior falla en {nombre} ({detalle}). Reescribela "
-                "respetando los MOVIMIENTOS PERMITIDOS.",
+                correccion=_correccion(nombre, detalle),
             )
         return Resultado(
             enviado=_respaldo(modo, estado),

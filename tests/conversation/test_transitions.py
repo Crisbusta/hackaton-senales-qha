@@ -104,8 +104,20 @@ def test_saying_goodbye_closes():
 # --- AB8: acuses vacios -------------------------------------------------
 
 def test_an_empty_acknowledgement_is_recognised():
-    for texto in ("ok", "OK.", " gracias ", "ya", "dale", "listo", "👍", "mmm"):
+    for texto in ("ok", "OK.", " gracias ", "👍", "mmm", "aja", "ok gracias"):
         assert t.es_acuse_vacio(texto), texto
+
+
+def test_una_afirmacion_no_es_un_acuse_vacio():
+    """"si", "ya", "dale", "bueno" y "listo" casi siempre responden a una
+    pregunta, no son cortesia.
+
+    Con ellas en la lista, dos afirmaciones seguidas dejaban a Patricia sin
+    ninguna respuesta —AB8 devuelve None al segundo acuse— y para ella el bot
+    se habia caido.
+    """
+    for texto in ("si", "sí", "ya", "dale", "bueno", "listo"):
+        assert not t.es_acuse_vacio(texto), texto
 
 
 def test_a_message_with_content_is_not_an_acknowledgement():

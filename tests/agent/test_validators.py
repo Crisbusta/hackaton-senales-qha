@@ -125,9 +125,28 @@ def test_frase_prohibida_falla():
 
 # --- chequeo 3: forma --------------------------------------------------
 
-def test_cuatro_frases_falla():
+def test_cuatro_frases_se_recortan_a_tres():
+    """Si lo unico que sobra son frases, se recorta en vez de descartar.
+
+    Descartar cambiaba una respuesta buena de mas por el texto de relleno del
+    modo, que no dice nada y, en E1-E3, promete un mensaje que nunca llega.
+    """
     r = validar(salida("Hola. Te leo. Aca estoy. Y tambien aca."), E2, DATOS_E2)
-    assert r.validadores["forma"] == "falla"
+
+    assert r.validadores["forma"] == "recortado"
+    assert r.enviado == "Hola. Te leo. Aca estoy."
+    assert r.override["motivo"] == "recortado_a_tres_frases"
+
+
+def test_el_recorte_no_rescata_otras_fallas():
+    """Solo el largo. Una frase prohibida o una cifra inventada no se arreglan
+    cortando: esas van al reintento."""
+    r = validar(salida("Tranquila. Te leo. Aca estoy. Y tambien aca."), E2, DATOS_E2)
+    assert r.validadores["frases_prohibidas"] == "falla"
+
+    larga = "Debes $999. Te leo. Aca estoy. Y tambien aca."
+    r2 = validar(salida(larga), E2, DATOS_E2)
+    assert r2.validadores["lista_blanca_numerica"] == "falla"
 
 
 def test_dos_preguntas_falla():
@@ -148,15 +167,31 @@ def test_oferta_sin_permiso_falla():
     assert r.validadores["movimientos"] == "falla"
 
 
+def test_la_salida_de_las_opciones_no_cuenta_como_la_oferta_de_seguir():
+    """MOVIMIENTO_ACLARAR pide la salida escrita "o lo dejamos aqui" porque C
+    la pidio asi, y `RE_OFERTA` no la distingue de la oferta de seguir.
+    Medido el 24 oct en C02 turno 5: el turno de aclaracion se rechazaba
+    siempre --AB2 ya habia consumido la oferta en ese escalon-- y Patricia
+    recibia el texto de respaldo en vez de las rutas."""
+    estado = dict(E2_SIN_OFERTA, puedes_aclarar_ruta=True)
+    r = validar(
+        salida("Que te complica?\n1. El pago minimo\n2. El saldo\no lo dejamos aqui"),
+        estado, DATOS_E2,
+    )
+    assert r.validadores["movimientos"] == "ok", r.validadores
+
+
 # --- chequeo 5: coherencia etiqueta-modo ------------------------------
 
 def test_cifra_en_apoyo_falla():
+    """En APOYO el backend no inyecta nada, asi que la fecha no viaja.
+
+    Y si apareciera, se rechaza: primero por la lista blanca (no hay ninguna
+    cifra autorizada) y, para lo que la lista blanca no ve, por la coherencia
+    del modo (el nombre de un mes).
+    """
     r = validar(salida("Te leo. Tu vencimiento sigue siendo el 3 de noviembre.",
-                       etiqueta="cuidadora_agotada"), APOYO,
-                {"vencimiento": DATOS_E2["vencimiento"]})
-    # APOYO no autoriza ningun campo, asi que ahora la ataja la lista blanca
-    # antes de llegar a coherencia_etiqueta_modo. Lo que importa es que no
-    # sale: una cifra en APOYO se rechaza, y cuanto antes, mejor.
+                       etiqueta="cuidadora_agotada"), APOYO, {})
     assert not r.ok
     assert r.validadores["lista_blanca_numerica"] == "falla"
 
@@ -401,23 +436,128 @@ def test_una_cifra_que_nadie_inyecto_sigue_sin_pasar():
 
 
 def test_en_las_pausas_y_en_apoyo_no_se_autoriza_ninguna_cifra():
-    """Ahi no hay segundo bloque: el modelo no vio nada, asi que cualquier
-    cifra es una alucinacion. Es la garantia de C01 y C10."""
-    for modo in ("PAUSA_RECHAZO", "APOYO", "CIERRE"):
+    """La garantia de C01 y C10, ahora en dos capas.
+
+    El validador ya no re-filtra por modo: con el turno en tres pasos el
+    backend inyecta exactamente los campos del modo final, y en estos modos
+    `fields_for_mode` devuelve ninguno. Asi que lo que llega aqui es `{}`, y
+    cualquier cifra en el mensaje es una alucinacion que la lista blanca
+    atrapa.
+    """
+    from app.modules.agent.interface import ConversationMode as M
+    from app.modules.agent.interface import fields_for_mode
+
+    for modo in ("PAUSA_RECHAZO", "APOYO", "CIERRE", "PAUSA_COMPRA"):
+        # Capa 1: el backend no tiene nada que mandar en estos modos.
+        assert fields_for_mode(M(modo)) == [], modo
+        # Capa 2: y si una cifra apareciera igual, el validador la rechaza.
         estado = {"modo": modo, "puedes_ofrecer_continuar": False, "limites_ya_dichos": []}
         r = validar(salida("Tu pago minimo es $74.350.", etiqueta="cuidadora_agotada"),
-                    estado, DATOS_E2)
+                    estado, {})
         assert not r.ok, modo
         assert r.validadores["lista_blanca_numerica"] == "falla", modo
 
 
-def test_pausa_compra_solo_autoriza_lo_del_calculo():
-    """PAUSA_COMPRA no es escalon: aunque el backend mandara la Escalera
-    entera, solo se autoriza lo que ese modo admite."""
+def test_las_pausas_y_el_cierre_tampoco_admiten_una_fecha():
+    """La lista blanca numerica no ve el nombre de un mes.
+
+    `chequeo_coherencia_etiqueta_modo` solo miraba APOYO, asi que "vence en
+    noviembre" pasaba en una pausa.
+    """
+    for modo in ("APOYO", "PAUSA_RECHAZO", "CIERRE"):
+        estado = {"modo": modo, "puedes_ofrecer_continuar": False, "limites_ya_dichos": []}
+        r = validar(salida("Eso vence en noviembre.", etiqueta="cuidadora_agotada"),
+                    estado, {})
+        assert not r.ok, modo
+        assert r.validadores["coherencia_etiqueta_modo"] == "falla", modo
+
+
+def test_pausa_compra_con_el_calculo_si_autoriza_sus_dos_cifras():
+    """Es la excepcion: si ella pidio ver cuanto le suma la cuota, el backend
+    inyecta el minimo y el minimo nuevo, y esas dos se pueden decir."""
+    datos = {"minimo": {"valor": 74350, "estado": "confirmado"},
+             "minimo_con_cuota": {"valor": 84350, "estado": "confirmado"}}
     estado = {"modo": "PAUSA_COMPRA", "puedes_ofrecer_continuar": False,
               "limites_ya_dichos": []}
-    r = validar(salida("Tu saldo es $1.064.000."), estado, DATOS_E2,
-                pidio_calculo_cuota=True)
+    r = validar(salida("Tu minimo pasaria de $74.350 a $84.350."), estado, datos)
 
-    assert not r.ok
-    assert r.validadores["lista_blanca_numerica"] == "falla"
+    assert r.ok
+    # Pero una cifra que no viajo sigue siendo una alucinacion.
+    r2 = validar(salida("Tu saldo es $1.064.000."), estado, datos)
+    assert not r2.ok
+
+
+def test_no_es_para_tanto_es_frase_prohibida():
+    """Del prompt del Playground (23 oct): minimiza lo que ella siente y es
+    literal, asi que se puede chequear."""
+    ok, detalle = chequeo_frases_prohibidas("No es para tanto, Patricia.")
+    assert not ok
+    assert "no es para tanto" in detalle
+
+
+def test_las_opciones_numeradas_no_cuentan_como_frases():
+    """Medido el 23 oct: las dos opciones de PAUSA_COMPRA daban 6 frases
+    contra un maximo de 3, asi que toda respuesta con opciones se caia al
+    texto de respaldo. Y quitar solo el prefijo "1." no alcanza: el texto de
+    cada opcion tambien termina en punto (6 -> 4, sigue sobre el limite).
+    """
+    mensaje = (
+        "Gracias por contarmelo antes de decidir. Tu eliges.\n"
+        "1. Esperar diez minutos y ver como te sientes.\n"
+        "2. Ver cuanto le sumaria esa cuota a tu pago minimo."
+    )
+    assert contar_frases(mensaje) == 2
+    assert chequeo_forma(mensaje)[0]
+
+
+def test_tres_caminos_con_salida_pasan_la_forma():
+    """El rescate de "no te entendi" (AB1/AB8) ofrece hasta tres caminos."""
+    mensaje = (
+        "Dime que lo complica.\n"
+        "1. No saber cuanto es.\n"
+        "2. El susto de verlo.\n"
+        "3. O lo dejamos aqui."
+    )
+    assert chequeo_forma(mensaje)[0]
+
+
+def test_las_frases_de_verdad_siguen_contando():
+    """El arreglo no puede relajar el limite para el texto normal."""
+    assert contar_frases("Una. Dos. Tres. Cuatro.") == 4
+    assert not chequeo_forma("Una. Dos. Tres. Cuatro.")[0]
+
+
+# --- chequeo 7: fuga de andamiaje ---------------------------------------
+
+
+def test_un_nombre_de_bloque_en_la_respuesta_falla():
+    """Patricia no tiene por que saber que existe un bloque llamado "DATOS QUE
+    PUEDES DECIR". Con el contexto resuelto hay mas encabezados en texto plano
+    que antes, asi que el riesgo de que los repita sube, no baja."""
+    for intruso in ("Segun DATOS QUE PUEDES DECIR, tu minimo es $74.350.",
+                    "Mis MOVIMIENTOS PERMITIDOS no incluyen eso.",
+                    "Eso viene en LOS DOS ULTIMOS TURNOS."):
+        r = validar(salida(intruso), E2, DATOS_E2)
+        assert not r.ok, intruso
+        assert r.validadores["fuga_de_andamiaje"] == "falla", intruso
+
+
+def test_otros_nombres_del_andamiaje_caen_antes_y_tambien_sirve():
+    """Dos nombres del contexto los atajan chequeos anteriores, y esta bien:
+
+    - `minimo_con_cuota` cae en la forma, porque el guion bajo no existe en el
+      texto plano de WhatsApp.
+    - "LO QUE TIENES QUE HACER" cae en frases prohibidas, porque contiene
+      "tienes que".
+    """
+    r = validar(salida("El campo minimo_con_cuota no esta disponible."), E2, DATOS_E2)
+    assert r.validadores["forma"] == "falla"
+
+    r2 = validar(salida("Eso no esta en LO QUE TIENES QUE HACER."), E2, DATOS_E2)
+    assert r2.validadores["frases_prohibidas"] == "falla"
+
+
+def test_una_respuesta_normal_no_dispara_el_chequeo_de_andamiaje():
+    r = validar(salida("Tu pago minimo es $74.350. Es lo que pide el banco."),
+                E2, DATOS_E2)
+    assert r.validadores["fuga_de_andamiaje"] == "ok"

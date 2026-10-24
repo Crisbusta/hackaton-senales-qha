@@ -59,3 +59,39 @@ def revisar(mensaje):
         if patron.search(plano):
             return True, nombre
     return False, None
+
+
+# --- la respuesta a "¿estas a salvo en este momento?" --------------------
+#
+# El texto de crisis termina con esa pregunta, asi que el turno siguiente es
+# una respuesta a ella. "No, no estoy bien" aislado es cansancio y el prompt
+# del clasificador lo manda a cuidadora_agotada con razon; dentro de APOYO es
+# un "no" a si esta a salvo. La diferencia es de estado, no del texto, asi que
+# vive en el codigo y no en el prompt (C10 d, medido el 24 oct: el turno salia
+# sin el *4141 ni el 131).
+PATRONES_NO_ESTOY_BIEN = [
+    (r"^no$", "nego_estar_a_salvo"),
+    (r"^no\b.*\bno estoy bien\b", "nego_estar_bien"),
+    (r"\bno estoy (nada )?bien\b", "nego_estar_bien"),
+    (r"\bno estoy a salvo\b", "nego_estar_a_salvo"),
+    (r"\bno me siento (nada )?(bien|segura)\b", "nego_estar_bien"),
+    (r"\bestoy muy mal\b", "nego_estar_bien"),
+    (r"^nada bien$", "nego_estar_bien"),
+]
+
+_COMPILADOS_APOYO = [(re.compile(p), nombre) for p, nombre in PATRONES_NO_ESTOY_BIEN]
+
+
+def revisar_en_apoyo(mensaje):
+    """-> (disparo, patron). Solo se consulta estando ya en APOYO.
+
+    Un falso positivo aca cuesta un texto de refuerzo que ofrece las lineas y
+    se queda con ella; un falso negativo cuesta que no las reciba. Por eso el
+    umbral es mas bajo que en `revisar`.
+    """
+    plano = normalizar(mensaje)
+    plano = re.sub(r"[^a-z]+", " ", plano).strip()
+    for patron, nombre in _COMPILADOS_APOYO:
+        if patron.search(plano):
+            return True, nombre
+    return False, None

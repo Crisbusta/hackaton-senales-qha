@@ -7,8 +7,6 @@ import pytest
 
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
-    AgentResponse,
     ConversationMode,
 )
 from app.modules.banking.provider import MockBankProvider
@@ -19,6 +17,7 @@ from app.modules.voice.schemas import AudioDecodeError, AudioTooLongError, Trans
 from app.modules.whatsapp.media import MediaTooLargeError
 from app.modules.whatsapp.schemas import IncomingMedia, IncomingMessage
 from app.shared.exceptions import IntegrationError
+from tests.conftest import TwoStepAgent as SpyAgent
 
 USER_ID = "+56912345678"
 MEDIA_URL = "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/ME1"
@@ -26,15 +25,6 @@ AUDIO = b"OggS-fake-audio"
 PDF = (
     Path(__file__).parents[1] / "statements" / "fixtures" / "2026-10_estado_de_cuenta_ficticio.pdf"
 ).read_bytes()
-
-
-class SpyAgent:
-    def __init__(self) -> None:
-        self.requests: list[AgentRequest] = []
-
-    async def process(self, request: AgentRequest) -> AgentResponse:
-        self.requests.append(request)
-        return AgentResponse(message="ok")
 
 
 class FakeFetcher:

@@ -16,7 +16,12 @@ AB3 y AB4 no necesitan código: Contigo no escribe primero y no hay nada
 fuera del webhook. Si alguna vez se agrega el recontacto (P1), vuelven acá.
 """
 
-from app.modules.agent.interface import ConversationEvent, ConversationMode, Intent
+from app.modules.agent.interface import (
+    LIMIT_CRISIS_LINE,
+    ConversationEvent,
+    ConversationMode,
+    Intent,
+)
 
 # La Escalera: el recorrido que sube de a un dato por vez. E4 no está porque
 # no se llega por avance, requiere que ella nombre un monto.
@@ -40,13 +45,17 @@ MODOS_CON_OFERTA = (
     ConversationMode.MINIMUM_BREAKDOWN,
 )
 
-LIMITE_LINEA_CRISIS = "linea_crisis"
+LIMITE_LINEA_CRISIS = LIMIT_CRISIS_LINE
 
 # Acuses sin contenido: se responden una vez (AB8).
+# Solo cortesia. "si", "ya", "dale", "bueno" y "listo" NO estan: en esta
+# conversacion casi siempre son la respuesta a una pregunta ("¿seguimos?"),
+# no un acuse. Con ellas aca, dos afirmaciones seguidas dejaban a Patricia
+# sin ninguna respuesta, y para ella el bot se habia caido.
 ACUSES = frozenset({
-    "ok", "oka", "okey", "okay", "ya", "dale", "bueno", "listo",
+    "ok", "oka", "okey", "okay",
     "gracias", "graciass", "gracias!", "ok gracias", "ya gracias",
-    "si", "sí", "mm", "mmm", "aja", "ajá", "👍", "🙏", "ok 👍",
+    "mm", "mmm", "aja", "ajá", "👍", "🙏", "ok 👍",
 })
 
 
@@ -57,7 +66,16 @@ def es_acuse_vacio(texto: str) -> bool:
 
 
 def _siguiente_escalon(modo: ConversationMode) -> ConversationMode:
-    """Un paso arriba en la Escalera, sin pasarse del último."""
+    """Un paso arriba en la Escalera, sin pasarse del último y sin bajar.
+
+    E4 no está en la Escalera (no se llega por avance, requiere que ella
+    nombre un monto), así que caía en el default y un avance desde E4 la
+    devolvía a E2: medido el 23 oct, "¿y si pago 100 mil?" desde E3 ponía el
+    modo en E4 y la transición del final del turno lo bajaba a E2. Desde un
+    modo fuera de la Escalera, avanzar es quedarse.
+    """
+    if modo is ConversationMode.AMOUNT_SIMULATION:
+        return modo
     if modo not in ESCALERA:
         return ConversationMode.BALANCE_OVERVIEW
     i = ESCALERA.index(modo)

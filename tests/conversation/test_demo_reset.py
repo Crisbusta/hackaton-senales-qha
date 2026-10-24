@@ -1,7 +1,7 @@
 import asyncio
 
 from app.core.config import Settings
-from app.modules.agent.interface import AgentRequest, AgentResponse, ConversationMode
+from app.modules.agent.interface import AgentReply, Classification, ConversationMode, Intent
 from app.modules.conversation.repository import InMemoryConversationRepository
 from app.modules.conversation.service import DEMO_RESET_REPLY, ConversationService
 from app.modules.whatsapp.schemas import IncomingMessage
@@ -12,11 +12,14 @@ OTHER = "+56922222222"
 
 class SpyAgent:
     def __init__(self) -> None:
-        self.requests: list[AgentRequest] = []
+        self.requests = []
 
-    async def process(self, request: AgentRequest) -> AgentResponse:
+    async def classify(self, request):
+        return Classification(intent=Intent.OFF_TOPIC)
+
+    async def write(self, request):
         self.requests.append(request)
-        return AgentResponse(message="ok")
+        return AgentReply(message="ok")
 
 
 def setup():

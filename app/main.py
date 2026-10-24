@@ -64,6 +64,7 @@ def create_app() -> FastAPI:
         agent=build_agent(settings),
         repository=repository,
         agent_timeout_s=settings.agent_timeout_s,
+        classify_timeout_s=settings.openai_classify_timeout_s,
         bank=build_bank_provider(settings),
         demo_admins=settings.demo_admins,
         media_fetcher=build_media_fetcher(settings),
