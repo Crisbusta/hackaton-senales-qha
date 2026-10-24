@@ -65,6 +65,13 @@ class DebitCard(BaseModel):
 
 
 class InstallmentPurchase(BaseModel):
+    """Compra en cuotas, vista desde el último estado de cuenta.
+
+    `paid_installments` = cuotas ya facturadas, incluida la del estado vigente
+    (la "05/12" del estado es 5). `remaining_installments` = cuotas que aún no
+    se facturan: su suma explica la diferencia entre cupo utilizado y facturado.
+    """
+
     description: str
     purchased_at: date
     total_amount: int
@@ -93,6 +100,28 @@ class CreditCardStatement(BaseModel):
     monthly_rate_pct: Decimal
 
 
+class StatementHistoryEntry(BaseModel):
+    """Resumen de un estado de cuenta mensual, con los montos tal como se imprimen.
+
+    billed_amount = previous_balance + purchases + interest + fees + tax - payments.
+    `payments` es lo abonado en el periodo, en positivo.
+    """
+
+    period_start: date
+    period_end: date
+    due_date: date
+    previous_balance: int
+    purchases: int  # operaciones del titular, incluidas las cuotas del mes
+    interest: int
+    fees: int
+    tax: int
+    payments: int = Field(ge=0)
+    billed_amount: int
+    minimum_payment: int
+    minimum_breakdown: MinimumPaymentBreakdown
+    credit_used: int  # cupo utilizado: facturado + cuotas por facturar
+
+
 class CreditCard(BaseModel):
     card_id: str
     masked_number: str
@@ -100,6 +129,8 @@ class CreditCard(BaseModel):
     total_debt: int
     statement: CreditCardStatement
     installment_purchases: list[InstallmentPurchase] = Field(default_factory=list)
+    # Estados de cuenta anteriores, del más antiguo al vigente (opcional).
+    statement_history: list[StatementHistoryEntry] = Field(default_factory=list)
 
     @computed_field
     @property

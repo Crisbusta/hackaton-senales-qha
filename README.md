@@ -153,13 +153,20 @@ Open Finance implementaría la misma interfaz sin cambiar el resto del backend.
 |---|---|
 | Cuenta vista | Saldo disponible y movimientos categorizados (ingresos, salud, alimentación, servicios básicos…) |
 | Tarjeta de débito | Asociada a la cuenta |
-| Tarjeta de crédito | Cupo, deuda, facturado, pago mínimo y su desglose, vencimiento, tasa, compras en cuotas |
+| Tarjeta de crédito | Cupo, deuda, facturado, pago mínimo y su desglose, vencimiento, tasa, compras en cuotas, historial de 12 estados de cuenta (`statement_history`) |
 | Crédito de consumo | Saldo, cuota, cuotas restantes, próximo vencimiento, CAE |
 
 `banking/service.py` traduce la tarjeta a `financial_data` con las mismas claves del estado
 de cuenta en PDF, y calcula resúmenes deterministas: flujo de caja mensual (ingresos variables,
 gastos esenciales) y panorama de deudas. Las cifras del escenario de Patricia coinciden con
 `docs/casos_p0.md`.
+
+El escenario de Patricia cuenta la misma historia que sus 12 estados de cuenta ficticios
+(noviembre 2025 a octubre 2026, tarjeta **** 6612): la tarjeta vigente es el estado de octubre
+2026, las compras en cuotas son las del PDF (`paid_installments` = cuotas ya facturadas, "05/12"
+→ 5) y los pagos de tarjeta de la cuenta vista (julio a octubre) son los "Pagos y Abonos" de cada
+periodo. Sus ingresos por ventas por catálogo varían y no cubren todo: paga cerca del mínimo.
+Los tests de `tests/banking/` verifican que todo cuadre.
 
 Convenciones: montos en `int` (CLP), tasas en `Decimal`, banco ficticio (nunca una marca real).
 
