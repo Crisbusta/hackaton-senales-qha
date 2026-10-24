@@ -79,6 +79,10 @@ class ConversationState(BaseModel):
     # Si la compra en cuotas es esencial (remedios), no se ofrece pausa ni cálculo.
     installment_essential: bool | None = None
 
+    # Nota de voz con un monto: la transcripción espera un "sí" antes de simular
+    # (un monto dicho se puede oír mal). Vale solo para el turno siguiente.
+    pending_voice_text: str | None = None
+
     # T07: el último estado de cuenta en PDF que ella envió.
     statement: StoredStatement | None = None
 

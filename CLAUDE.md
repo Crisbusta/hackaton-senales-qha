@@ -53,7 +53,15 @@ ConversationService.handle()            conversation/service.py
   2. /reiniciar desde DEMO_ADMIN_NUMBERS → borra el estado y responde
   3. PDF adjunto (application/pdf) → statement_intake: descarga desde Twilio (solo api.twilio.com,
      ≤5 MB, en memoria) → parse_statement + validate → state.statement → texto fijo SIN cifras,
-     sin llamar al agente. Imágenes/audios siguen el flujo normal
+     sin llamar al agente. Las imágenes siguen el flujo normal
+  3b. nota de voz (audio/ogg, mpeg, mp4, amr, wav) SIN texto y con transcriptor → voice_intake:
+     descarga (≤5 MB) + transcripción local (faster-whisper, ≤VOICE_MAX_SECONDS, plazo
+     VOICE_TIMEOUT_S) → message.body = transcripción y el turno sigue normal (historial:
+     "(audio) …"). Falla/vacío → texto fijo sin agente. Si la transcripción dispararía el
+     simulador (se prueba plan_turn sobre una copia del estado) → "Te entendí $X. ¿Quieres que
+     pruebe con $X?" sin agente, y state.pending_voice_text; un "sí"/"dale" en el turno
+     siguiente procesa esa transcripción (ahí se simula); cualquier otra cosa la descarta.
+     Con texto, el audio se ignora; sin transcriptor (VOICE_ENABLED=false) el audio va vacío
   4. AB8: un acuse vacío ("ok", "gracias") se responde una sola vez
   5. simulation.plan_turn(): "¿y si pago 100 mil?" desde E2+ → modo E4 ANTES de llamar al agente;
      opción 2 en PAUSA_COMPRA → installment_calc_requested
@@ -88,11 +96,12 @@ anterior", empieza por ahí.
 | `agent/interface.py` | **Contrato compartido** backend ↔ IA | Ambos: todo cambio se acuerda antes |
 | `banking/` | `BankDataProvider` + `MockBankProvider` (fixture `patricia.json`, banco ficticio). El fixture coincide con los 12 estados de cuenta PDF de Patricia (2025-11 → 2026-10): tarjeta = estado de 2026-10, cuotas y pagos de cada período, y `statement_history` con los 12 meses | Backend |
 | `statements/` | Parser de estados de cuenta en PDF (`pypdf`, BSD): `parse_statement(bytes)` → mismos campos y formatos que `credit_card_fields()`, con `ABSENT`/`UNRELIABLE`; `validate_statement()` revisa que el resumen sume, el cupo cuadre, etc. En memoria, nunca extrae nombre ni RUT | Backend |
+| `voice/` | `Transcriber` (Protocol) + `LocalWhisperTranscriber`: faster-whisper `small` int8 en CPU, `language="es"`, `beam_size=1`, VAD. Decodifica con PyAV en memoria (el `decode_audio` de faster-whisper falla con PyAV 19), modelo cargado una vez (precarga en el `lifespan`), nunca registra el texto. `build_transcriber()` → None si está apagado | Backend |
 | `finance/` | Motor determinista (`Decimal`, resultados `int` CLP) | Backend |
 | `dashboard/` | `/dashboard` con autenticación básica; lee `repository.list_all()` | Backend |
 
 `main.py` es la raíz de composición: arma agente (`build_agent`, importa `LlmAgent` de forma
-diferida), repositorio, banco y servicio en `app.state`.
+diferida), repositorio, banco, transcriptor de voz (`build_transcriber`) y servicio en `app.state`.
 
 ## Contrato (`agent/interface.py`) y documentos
 
@@ -131,7 +140,11 @@ diferida), repositorio, banco y servicio en `app.state`.
 es `AGENT_TIMEOUT_S − agent_budget_margin_s`; Twilio corta a ~15 s), `OPENAI_TIMEOUT_S` (9),
 `PUBLIC_BASE_URL` (solo el origen, sin path ni `/` final), `TWILIO_AUTH_TOKEN` (el **primario** de
 Twilio), `TWILIO_ACCOUNT_SID` (para descargar el PDF), `MOCK_BANK_SCENARIO`, `DEMO_ADMIN_NUMBERS`,
-`DASHBOARD_PASSWORD`, `DATABASE_URL` (vacío = en memoria; con valor = PostgreSQL). En Railway los valores
+`DASHBOARD_PASSWORD`, `DATABASE_URL` (vacío = en memoria; con valor = PostgreSQL), `VOICE_ENABLED`
+(`false` en el código; la imagen Docker la pone en `true` porque trae el modelo horneado en
+`VOICE_MODEL_DIR=/app/models/faster-whisper-small`, con `HF_HUB_OFFLINE=1`), `VOICE_MODEL`
+(`small`), `VOICE_MAX_SECONDS` (60), `VOICE_TIMEOUT_S` (20: pensado para la respuesta fuera de
+banda; con TwiML síncrono no cabe en los ~15 s de Twilio), `VOICE_CPU_THREADS` (0 = auto). En Railway los valores
 van sin comillas en el campo de valor.
 
 ## Tests
@@ -175,6 +188,13 @@ no coinciden.
   entre estados del **mismo período**, `period_end`): PDF más antiguo que el banco → manda el banco;
   más nuevo → manda el PDF; mismo período → el PDF manda, si difiere del banco → `UNRELIABLE` (montos
   como lista, textos unidos con " / "), y si le falta un dato se usa el del banco. El simulador (T10) todavía usa solo el banco. Los pasos con PDF del runner se omiten.
+- **Notas de voz**: el modelo `small` suma ~480 MB a la imagen (620 MB → 2,41 GB en disco). En un
+  M1 Pro nativo, una nota de 11 s tarda ~1,8 s; en Docker linux/arm64 ~3,8 s (4 hilos) y ~10 s con
+  `--cpus 2`: medir en Railway. `asyncio.wait_for` no detiene el hilo de Whisper al vencer el
+  plazo (la CPU sigue ocupada hasta que termina). Varios audios simultáneos compiten por la CPU.
+  Textos de voz (`voice_intake.*_REPLY`) pendientes de validación de C. La confirmación de montos
+  solo cubre lo que detecta el simulador por reglas; un monto mal oído fuera del simulador
+  ("me pagaron 100 mil") viaja tal cual al agente. El runner P0 no tiene pasos con audio.
 - **Salir de una pausa pidiendo un dato** (no con "hola") todavía responde con el texto de pausa
   en ese turno (solo la retoma hacia E0 se re-pregunta).
 - **Detección de T10 por reglas**: solo con montos explícitos ("100 mil", "$100.000", "80 lucas").

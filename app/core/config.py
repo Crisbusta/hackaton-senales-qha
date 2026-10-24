@@ -64,6 +64,21 @@ class Settings(BaseSettings):
     agent_trace_enabled: bool = False
     agent_trace_path: str = "turnos.jsonl"
 
+    # Notas de voz: transcripción local con faster-whisper (el audio no sale del
+    # servidor). Apagadas por defecto en el código: sin el modelo en disco, el
+    # primer audio lo bajaría de Hugging Face. La imagen Docker trae el modelo y
+    # las enciende (VOICE_ENABLED=true, VOICE_MODEL_DIR=/app/models/...).
+    voice_enabled: bool = False
+    voice_model: str = "small"
+    # Carpeta del modelo ya descargado. Con valor, nunca se consulta Hugging Face.
+    voice_model_dir: str = ""
+    voice_max_seconds: float = 60.0
+    # Descarga + transcripción. Holgado: la respuesta irá fuera de banda (~30 s);
+    # con la respuesta TwiML síncrona Twilio corta a ~15 s.
+    voice_timeout_s: float = 20.0
+    # Hilos de CPU para Whisper (0 = los que decida CTranslate2).
+    voice_cpu_threads: int = 0
+
     # Twilio (se usan desde feat/twilio-webhook).
     twilio_auth_token: str = ""
     # Necesario para descargar adjuntos (el PDF del estado de cuenta). No es secreto.

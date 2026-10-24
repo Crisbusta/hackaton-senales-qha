@@ -12,3 +12,6 @@
 *.pdf
 docs
 tests
+models
+*.ogg
+.playwright-mcp
