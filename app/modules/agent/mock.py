@@ -1,81 +1,92 @@
-"""Agente simulado: respuestas fijas por palabras clave, sin APIs externas.
+"""Agente simulado: el contrato sin proveedor LLM.
 
-Permite probar backend y WhatsApp mientras se desarrolla el agente real.
-Nunca muestra cifras: no tiene datos verificables de dónde sacarlas.
+Sirve para que el backend y sus tests no dependan de la red ni de tokens, y
+para la demo sin costo. Clasifica con reglas obvias y redacta con los textos
+que el modo permite.
+
+Las etiquetas que emite tienen que existir en `Intent`: un doble que emita
+una etiqueta imposible hace pasar tests que el modelo real no podria pasar.
 """
 
-import unicodedata
-
 from app.modules.agent.interface import (
-    PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
-    AgentResponse,
+    AgentReply,
+    Classification,
+    ClassifyRequest,
     ConversationEvent,
+    ConversationMode,
+    Intent,
+    WriteRequest,
 )
+from app.modules.agent.texts import TEXTOS_FIJOS, TEXTOS_RESPALDO
 
-# El orden importa: una negativa explícita gana sobre una solicitud
-# ("no quiero saber cuánto debo" es una negativa).
-_DECLINE = ("prefiero no", "no quiero", "todavia no", "ahora no", "no estoy lista")
-_REQUEST_BALANCE = ("cuanto debo", "cuanto es mi deuda", "mi saldo", "cuanto tengo que pagar")
-_FEAR = ("miedo", "me asusta", "me angustia", "me da susto", "ansiedad")
-_GREETING = ("hola", "buenas", "buenos dias", "buenas tardes", "buenas noches")
-
-DECLINE_REPLY = (
-    "Está bien, no vamos a mirar números ahora. Tú decides el ritmo. "
-    "Cuando quieras retomarlo, solo dímelo."
-)
-FEAR_REPLY = (
-    "Es muy comprensible sentir eso; a mucha gente le pasa. "
-    "Podemos ir de a poco, sin mirar cifras si no quieres. "
-    "¿Te gustaría que partamos por algo pequeño, como saber cuándo vence tu tarjeta?"
-)
-REQUEST_BALANCE_REPLY = (
-    "Claro. Para decirte el monto exacto necesito tu estado de cuenta: "
-    "puedes enviármelo aquí como PDF y lo revisamos juntas, paso a paso."
-)
-GREETING_REPLY = (
-    "Hola 👋 Soy Contigo. Estoy aquí para acompañarte con tus finanzas, a tu ritmo. "
-    "¿Cómo te sientes hoy con tus cuentas?"
-)
-GREETING_AFTER_DECLINE_REPLY = (
-    "Hola de nuevo 👋 Aquí estoy. No tenemos que mirar números hoy; "
-    "conversemos de lo que tú quieras."
-)
-DEFAULT_REPLY = "Te leo. ¿Me cuentas un poco más para poder ayudarte mejor?"
+_SALUDOS = ("hola", "buenas", "buenos dias", "buenas tardes", "buenas noches")
+_RECHAZO = ("no quiero", "no puedo verlo", "prefiero no", "mejor no",
+            "despues", "mas tarde")
+_CRISIS = ("no quiero seguir viviendo", "me quiero morir", "matarme")
+_CUOTAS = ("cuotas", "comprar")
+_INFO = ("cuanto", "cuando", "vence", "minimo", "saldo", "debo")
+_CIERRE = ("gracias, chao", "chao", "nos vemos")
 
 
-def _normalize(text: str) -> str:
-    without_accents = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
-    return " ".join(without_accents.lower().split())
-
-
-def _contains(text: str, phrases: tuple[str, ...]) -> bool:
-    return any(phrase in text for phrase in phrases)
+def _normalizar(texto: str) -> str:
+    return " ".join(texto.lower().split())
 
 
 class MockAgent:
-    """Implementa el protocolo `Agent` de interface.py."""
+    """Implementa el protocolo `Agent` sin salir a la red."""
 
-    async def process(self, request: AgentRequest) -> AgentResponse:
-        text = _normalize(request.message)
-        declined_before = request.preferences.get(PREF_SHOW_FINANCIAL_FIGURES) is False
-
-        if _contains(text, _DECLINE):
-            return AgentResponse(
-                message=DECLINE_REPLY,
-                intent="rechazo_pausa",
+    async def classify(self, request: ClassifyRequest) -> Classification:
+        texto = _normalizar(request.message)
+        if any(f in texto for f in _CRISIS):
+            return Classification(
+                intent=Intent.DISTRESS,
+                event=ConversationEvent.CRISIS_SUPPORT_NEEDED,
+            )
+        if any(f in texto for f in _RECHAZO):
+            return Classification(
+                intent=Intent.DECLINED,
                 event=ConversationEvent.DECLINED_BALANCE_REVIEW,
             )
-        if _contains(text, _REQUEST_BALANCE):
-            # Solicitud explícita actual: prevalece sobre una negativa anterior.
-            return AgentResponse(
-                message=REQUEST_BALANCE_REPLY,
-                intent="solicitud_informacion",
+        if any(f in texto for f in _CUOTAS):
+            return Classification(intent=Intent.INSTALLMENT_INTENT, essential=False)
+        if any(texto.startswith(s) for s in _SALUDOS):
+            return Classification(intent=Intent.GREETING_ONLY)
+        if any(f in texto for f in _CIERRE):
+            return Classification(intent=Intent.CLOSING)
+        if any(f in texto for f in _INFO):
+            return Classification(
+                intent=Intent.INFO_REQUEST,
                 event=ConversationEvent.REQUESTED_BALANCE,
             )
-        if _contains(text, _FEAR):
-            return AgentResponse(message=FEAR_REPLY, intent="expresa_temor")
-        if _contains(text, _GREETING):
-            reply = GREETING_AFTER_DECLINE_REPLY if declined_before else GREETING_REPLY
-            return AgentResponse(message=reply, intent="saludo")
-        return AgentResponse(message=DEFAULT_REPLY)
+        return Classification(intent=Intent.AMBIGUOUS)
+
+    async def write(self, request: WriteRequest) -> AgentReply:
+        etiqueta = request.classification.intent
+        if etiqueta == Intent.DISTRESS:
+            return AgentReply(message=TEXTOS_FIJOS["angustia_fuerte"], protected_text=True)
+        if etiqueta == Intent.DECLINED:
+            return AgentReply(message=TEXTOS_FIJOS["rechazo_pausa"], protected_text=True)
+        if etiqueta == Intent.NOT_TEXT:
+            return AgentReply(message=TEXTOS_FIJOS["no_texto"], protected_text=True)
+
+        modo = request.mode
+        if modo in (ConversationMode.PAUSE, ConversationMode.INSTALLMENT_PAUSE,
+                    ConversationMode.SUPPORT):
+            # En un desvio no se saluda ni se ofrece nada: manda el modo.
+            return AgentReply(message=TEXTOS_RESPALDO[modo.value])
+        if etiqueta == Intent.GREETING_ONLY:
+            return AgentReply(message="Hola, Patricia. Acá estoy, sin apuro.")
+        if etiqueta == Intent.CLOSING:
+            return AgentReply(message=TEXTOS_RESPALDO["CIERRE"])
+        if modo in (ConversationMode.DUE_DATE, ConversationMode.BALANCE_OVERVIEW,
+                    ConversationMode.MINIMUM_BREAKDOWN, ConversationMode.AMOUNT_SIMULATION):
+            partes = [
+                f"{nombre}: {campo.value}"
+                for nombre, campo in request.financial_data.items()
+                if campo.value is not None
+            ]
+            if partes:
+                return AgentReply(message="Te cuento. " + "; ".join(partes) + ".")
+        return AgentReply(
+            message=TEXTOS_RESPALDO.get(modo.value, TEXTOS_RESPALDO["E0"])
+        )

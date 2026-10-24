@@ -22,6 +22,10 @@ Historia de los cambios acordados sobre este contrato:
   `int`; se publicaron las etiquetas (`Intent`) porque el backend necesita
   nombrarlas para las transiciones; y la tabla de campos por modo se movió
   acá, para que backend y agente filtren con la misma fuente de verdad.
+- PR de este cambio: el protocolo pasa de `process()` a `classify()` + `write()`.
+  `AgentRequest`/`AgentResponse` se reemplazan por `ClassifyRequest`,
+  `Classification`, `WriteRequest` y `AgentReply`. El motivo esta en el
+  docstring de `Agent`.
 - Se eliminaron `AVOID_FINANCIAL_REVIEW` y `REQUESTED_SUMMARY`: nunca tuvieron
   una semántica acordada y nadie los emitía (acordado en #5).
 """
@@ -29,7 +33,7 @@ Historia de los cambios acordados sobre este contrato:
 from enum import StrEnum
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ConversationMode(StrEnum):
@@ -86,7 +90,7 @@ class ConversationEvent(StrEnum):
 
 
 class Intent(StrEnum):
-    """Las 16 etiquetas que el modelo puede emitir (T04).
+    """Las 17 etiquetas que el modelo puede emitir (T04).
 
     Están acá y no solo en el agente porque el backend necesita nombrarlas:
     `previous_intent` habilita datos condicionales, `intencion_compra_cuotas`
@@ -116,6 +120,13 @@ class Intent(StrEnum):
     ASKS_BILLED_AMOUNT = "pregunta_monto_facturado"
     ASKS_DICOM = "pregunta_dicom"
     ASKS_IDENTITY = "pregunta_identidad"
+    # Un saludo suelto. Existe porque sin ella "hola" salia como `ambiguo`,
+    # que incrementa `recognition_failures`: dos saludos y se disparaban las
+    # opciones numeradas de rescate para alguien que solo saludo. No avanza la
+    # Escalera (no esta en AVANCE) y no cuenta como fallo de reconocimiento
+    # (no es AMBIGUOUS), asi que el comportamiento correcto sale de las tablas
+    # que ya existen.
+    GREETING_ONLY = "saludo"
     # Entrada que no se puede procesar.
     NOT_TEXT = "no_texto"
     OFF_TOPIC = "tangente"
@@ -216,78 +227,145 @@ class ConversationMessage(BaseModel):
     content: str
 
 
-class AgentRequest(BaseModel):
+class ClassifyRequest(BaseModel):
+    """Lo que el clasificador necesita, y nada mas.
+
+    No recibe NINGUNA cifra: ni `financial_data`, ni `calculations`, ni el
+    historial sin enmascarar. Esta llamada no puede filtrar un monto porque
+    no tiene ninguno, y eso es una garantia por construccion, no una regla
+    que haya que vigilar.
+    """
+
+    # Estricto a proposito: un campo que no existe es un error, no algo que se
+    # descarte en silencio. Paso de verdad en la migracion a este contrato:
+    # `AgentReply(message=..., event=...)` perdia el evento sin avisar, y el
+    # modelo quedaba desempaquetable como tupla.
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    message: str
+    # El modo actual. Lo necesita para distinguir casos que dependen de donde
+    # esta: pedir un dato estando en una pausa es `solicitud_informacion`, no
+    # `retoma_voluntaria`.
+    mode: ConversationMode
+    # Ventana corta para resolver referencias ("si", "la segunda"). Las cifras
+    # vienen enmascaradas: el clasificador nunca ve un monto.
+    recent_history: list[ConversationMessage] = Field(default_factory=list)
+
+
+class Classification(BaseModel):
+    """Lo que el modelo decide sobre el mensaje. Sin prosa.
+
+    `intent` es `str` a proposito: si el modelo devuelve algo fuera de
+    `Intent`, el agente lo registra tal cual en la traza en vez de reventar.
+    Comparar siempre contra `Intent.X`.
+    """
+
+    # Estricto a proposito: un campo que no existe es un error, no algo que se
+    # descarte en silencio. Paso de verdad en la migracion a este contrato:
+    # `AgentReply(message=..., event=...)` perdia el evento sin avisar, y el
+    # modelo quedaba desempaquetable como tupla.
+    model_config = ConfigDict(extra="forbid")
+
+    intent: str = "UNKNOWN"
+    # Solo si intent == "intencion_compra_cuotas": si es esencial (remedios o
+    # similar), el backend no ofrece pausa ni calculo.
+    essential: bool | None = None
+    # Solo si ella dijo una cifra explicita; nunca calculada. En pesos.
+    mentioned_amount: int | None = None
+    # Si pidio otro ritmo en este mensaje. Sin esto, el redactor tendria que
+    # inferirlo, que es justo lo que se le saco.
+    pace: Literal["mas_lento", "todo_de_una"] | None = None
+    # Derivado del intent por el agente (tabla INTENT_TO_EVENT). El backend
+    # traduce eventos a estado con reglas deterministas.
+    event: ConversationEvent | None = None
+
+
+class WriteRequest(BaseModel):
+    """Lo que el redactor recibe: el turno YA resuelto.
+
+    `mode` es el modo FINAL del turno, no el de entrada. Esa es toda la
+    diferencia con el orden anterior: el backend clasifica, decide el modo y
+    filtra los datos, y solo entonces pide la redaccion. El redactor no
+    evalua ninguna condicion de estado porque no le llega ninguna.
+
+    Los movimientos NO viajan por el contrato: los resuelve el agente a
+    partir de `mode` y de la clasificacion, porque la tabla de movimientos es
+    del prompt y el prompt es del agente.
+    """
+
+    # Estricto a proposito: un campo que no existe es un error, no algo que se
+    # descarte en silencio. Paso de verdad en la migracion a este contrato:
+    # `AgentReply(message=..., event=...)` perdia el evento sin avisar, y el
+    # modelo quedaba desempaquetable como tupla.
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str
     message: str
     mode: ConversationMode
 
-    # Solo los campos de datos_pdf que corresponden al modo actual (T06 los
-    # filtra antes de llamar al agente). Lo que no está aquí, el agente no
-    # lo puede mencionar: es la inyección mínima de datos.
+    # Exactamente los campos que la respuesta puede mencionar, ya filtrados
+    # por el modo final. Lo que no esta aqui no entra al contexto.
     financial_data: dict[str, FinancialField] = Field(default_factory=dict)
-
-    # Ventana corta (1-2 turnos) solo para que la redacción suene natural y
-    # para resolver referencias ("sí", "la segunda").
-    # NUNCA es la fuente de una cifra: las únicas cifras autorizadas son las
-    # de `financial_data` y `calculations`. Si el validador encuentra un
-    # número que no está en ninguna de las dos, se descarta sin mirar de
-    # dónde lo sacó; por eso el agente inyecta este historial con los montos
-    # enmascarados.
-    recent_history: list[ConversationMessage] = Field(default_factory=list)
-
-    # Estado anti-bucle que el backend ya calculó para este turno.
-    can_offer_continue: bool = False  # AB2: una oferta por escalón
-    can_clarify_route: bool = False  # AB1: una aclaración por tema
-    already_stated_limits: list[str] = Field(default_factory=list)  # AB7
-
-    # El escalón más alto que ella alcanzó en la conversación (AB6: solo
-    # sube). Permite que `retoma_voluntaria` reconozca lo que ya vio
-    # ("la vez pasada miramos tu pago mínimo") sin repetir las cifras.
-    # None equivale a GREETING: nunca pasó de conversar.
-    max_mode_reached: ConversationMode | None = None
-
-    # Resultados del simulador (T10), ya calculados. El agente los redacta
-    # pero nunca los recalcula: las cifras financieras no pasan por el LLM.
-    # Montos en pesos y plazos en meses, los dos `int`.
-    # Las claves son libres porque T10 todavía no está implementado; cuando
-    # exista, se cierran aquí.
+    # Resultados del simulador (T10), ya calculados. El agente los redacta,
+    # nunca los recalcula.
     calculations: dict[str, int] = Field(default_factory=dict)
 
-    # Etiqueta del turno anterior. Habilita los datos condicionales que no
-    # pertenecen a ningún escalón: `monto_facturado` solo entra si ella
-    # acaba de preguntar por él, y la tasa solo si preguntó por intereses.
-    previous_intent: str | None = None
+    # La clasificacion de este turno. El agente la usa para resolver los
+    # movimientos que dependen de ella (esencial, ritmo), no para reclasificar.
+    classification: Classification
 
-    # True cuando ella eligió ver cuánto le sumaría la cuota al mínimo
-    # (opción 2 de PAUSA_COMPRA). Sin esto, PAUSA_COMPRA no recibe ninguna
-    # cifra y el agente no puede responder a lo que ella pidió.
+    recent_history: list[ConversationMessage] = Field(default_factory=list)
+
+    # Estado anti-bucle que el backend ya calculo. Se traducen en movimientos
+    # resueltos: el redactor nunca ve el flag.
+    can_offer_continue: bool = False  # AB2: una oferta por escalon
+    can_clarify_route: bool = False  # AB1/AB8: una aclaracion por tema
+    already_stated_limits: list[str] = Field(default_factory=list)  # AB7
+
+    # El escalon mas alto alcanzado (AB6). Permite reconocer lo que ya vio sin
+    # repetir cifras.
+    max_mode_reached: ConversationMode | None = None
+
+    # True cuando ella eligio ver cuanto le sumaria la cuota al minimo.
     requested_installment_calculation: bool = False
 
     preferences: dict[str, bool] = Field(default_factory=dict)
 
 
-class AgentResponse(BaseModel):
-    message: str
-    intent: str = "UNKNOWN"
-    event: ConversationEvent | None = None
-    # Solo relevante si intent == "intencion_compra_cuotas": si es esencial
-    # (remedios o similar), el backend no debe ofrecer pausa ni cálculo.
-    essential: bool | None = None
-    # Solo si ella mencionó una cifra explícita; nunca calculada por el
-    # agente. En pesos, sin decimales.
-    mentioned_amount: int | None = None
+class AgentReply(BaseModel):
+    """La respuesta para Patricia. Solo texto."""
 
-    # True cuando `message` NO lo redactó el modelo: es uno de los textos
-    # fijos que validó C (crisis, rechazo, no_texto) o el respaldo del modo.
+    # Estricto a proposito: un campo que no existe es un error, no algo que se
+    # descarte en silencio. Paso de verdad en la migracion a este contrato:
+    # `AgentReply(message=..., event=...)` perdia el evento sin avisar, y el
+    # modelo quedaba desempaquetable como tupla.
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    # True cuando `message` NO lo redacto el modelo: es uno de los textos
+    # fijos que valido C (crisis, rechazo, no_texto) o el respaldo del modo.
     # El backend no debe reescribirlo ni filtrarlo.
     #
-    # Existe por un fallo real encontrado en el recorrido end-to-end: el
-    # texto de crisis contiene "*4141" y "131", el filtro de cifras de
-    # ConversationService los leyó como montos, y un mensaje de ideación
-    # suicida recibió "Dejemos los números de lado por ahora" en vez de la
-    # línea de ayuda.
+    # Existe por un fallo real del recorrido end-to-end: el texto de crisis
+    # contiene "*4141" y "131", el filtro de cifras los leyo como montos, y un
+    # mensaje de ideacion suicida recibio "Dejemos los numeros de lado por
+    # ahora" en vez de la linea de ayuda.
     protected_text: bool = False
 
 
 class Agent(Protocol):
-    async def process(self, request: AgentRequest) -> AgentResponse: ...
+    """Dos pasos, no uno.
+
+    El turno es clasificar -> decidir -> redactar. El backend llama a
+    `classify`, resuelve el modo final y los datos con sus reglas
+    deterministas, y recien entonces llama a `write`. Mientras fue un solo
+    paso, el modelo redactaba con el modo de ENTRADA y el modo cambiaba
+    despues: de ahi venian el turno de atraso, la precarga con su
+    verificacion posterior, la deteccion previa de T10 y el re-llamado al
+    entrar a un modo. Los cuatro mecanismos desaparecen con este orden.
+    """
+
+    async def classify(self, request: ClassifyRequest) -> Classification: ...
+
+    async def write(self, request: WriteRequest) -> AgentReply: ...

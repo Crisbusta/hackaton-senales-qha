@@ -1,9 +1,10 @@
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
+    Classification,
     ConversationMode,
     FieldStatus,
     FinancialField,
+    WriteRequest,
 )
 from app.modules.conversation import progress
 from app.modules.conversation.schemas import ConversationState
@@ -79,7 +80,10 @@ def test_pause_resume_purchase_pause_and_support() -> None:
 
 def test_record_turn_marks_each_milestone_once_and_logs_the_turn() -> None:
     s = state(mode=E2)
-    request = AgentRequest(user_id="u1", message="x", mode=E2, financial_data=DATA)
+    request = WriteRequest(
+        user_id="u1", message="x", mode=E2, financial_data=DATA,
+        classification=Classification(),
+    )
 
     first = progress.record_turn(
         s, E1, "Tu mínimo es $74.350.", request, "disposicion_explorar", None

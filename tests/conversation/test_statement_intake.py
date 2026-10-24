@@ -7,10 +7,12 @@ import pytest
 
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
-    AgentResponse,
+    AgentReply,
+    Classification,
+    ConversationEvent,
     FieldStatus,
     FinancialField,
+    Intent,
 )
 from app.modules.banking.provider import MockBankProvider
 from app.modules.conversation import statement_intake
@@ -29,11 +31,21 @@ MEDIA_URL = "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/M
 
 class SpyAgent:
     def __init__(self) -> None:
-        self.requests: list[AgentRequest] = []
+        self.requests = []
 
-    async def process(self, request: AgentRequest) -> AgentResponse:
+    async def classify(self, request):
+        # Pedir un dato sube el escalon, que es lo que estos tests necesitan
+        # para ver datos en el contexto.
+        if "?" in request.message:
+            return Classification(
+                intent=Intent.INFO_REQUEST,
+                event=ConversationEvent.REQUESTED_BALANCE,
+            )
+        return Classification(intent=Intent.OFF_TOPIC)
+
+    async def write(self, request):
         self.requests.append(request)
-        return AgentResponse(message="ok")
+        return AgentReply(message="ok")
 
 
 class FakeFetcher:
@@ -103,9 +115,11 @@ def test_next_turn_uses_the_statement_as_a_source() -> None:
     send(service, content_type="application/pdf", sid="SM1")
     send(service, body="¿cuándo vence?", sid="SM2")
 
+    # "¿cuándo vence?" sube a E1, y E1 manda exactamente el vencimiento: el
+    # resto de la Escalera ya no viaja de arrastre (se fue la precarga).
     data = agent.requests[0].financial_data
+    assert set(data) == {"vencimiento"}
     assert data["vencimiento"].value == "3 de noviembre de 2026"
-    assert data["minimo"].value == 74350
 
 
 def test_statement_and_bank_agree_for_patricia() -> None:

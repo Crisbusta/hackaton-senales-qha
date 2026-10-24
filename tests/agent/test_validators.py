@@ -151,12 +151,14 @@ def test_oferta_sin_permiso_falla():
 # --- chequeo 5: coherencia etiqueta-modo ------------------------------
 
 def test_cifra_en_apoyo_falla():
+    """En APOYO el backend no inyecta nada, asi que la fecha no viaja.
+
+    Y si apareciera, se rechaza: primero por la lista blanca (no hay ninguna
+    cifra autorizada) y, para lo que la lista blanca no ve, por la coherencia
+    del modo (el nombre de un mes).
+    """
     r = validar(salida("Te leo. Tu vencimiento sigue siendo el 3 de noviembre.",
-                       etiqueta="cuidadora_agotada"), APOYO,
-                {"vencimiento": DATOS_E2["vencimiento"]})
-    # APOYO no autoriza ningun campo, asi que ahora la ataja la lista blanca
-    # antes de llegar a coherencia_etiqueta_modo. Lo que importa es que no
-    # sale: una cifra en APOYO se rechaza, y cuanto antes, mejor.
+                       etiqueta="cuidadora_agotada"), APOYO, {})
     assert not r.ok
     assert r.validadores["lista_blanca_numerica"] == "falla"
 
@@ -401,26 +403,55 @@ def test_una_cifra_que_nadie_inyecto_sigue_sin_pasar():
 
 
 def test_en_las_pausas_y_en_apoyo_no_se_autoriza_ninguna_cifra():
-    """Ahi no hay segundo bloque: el modelo no vio nada, asi que cualquier
-    cifra es una alucinacion. Es la garantia de C01 y C10."""
-    for modo in ("PAUSA_RECHAZO", "APOYO", "CIERRE"):
+    """La garantia de C01 y C10, ahora en dos capas.
+
+    El validador ya no re-filtra por modo: con el turno en tres pasos el
+    backend inyecta exactamente los campos del modo final, y en estos modos
+    `fields_for_mode` devuelve ninguno. Asi que lo que llega aqui es `{}`, y
+    cualquier cifra en el mensaje es una alucinacion que la lista blanca
+    atrapa.
+    """
+    from app.modules.agent.interface import ConversationMode as M
+    from app.modules.agent.interface import fields_for_mode
+
+    for modo in ("PAUSA_RECHAZO", "APOYO", "CIERRE", "PAUSA_COMPRA"):
+        # Capa 1: el backend no tiene nada que mandar en estos modos.
+        assert fields_for_mode(M(modo)) == [], modo
+        # Capa 2: y si una cifra apareciera igual, el validador la rechaza.
         estado = {"modo": modo, "puedes_ofrecer_continuar": False, "limites_ya_dichos": []}
         r = validar(salida("Tu pago minimo es $74.350.", etiqueta="cuidadora_agotada"),
-                    estado, DATOS_E2)
+                    estado, {})
         assert not r.ok, modo
         assert r.validadores["lista_blanca_numerica"] == "falla", modo
 
 
-def test_pausa_compra_solo_autoriza_lo_del_calculo():
-    """PAUSA_COMPRA no es escalon: aunque el backend mandara la Escalera
-    entera, solo se autoriza lo que ese modo admite."""
+def test_las_pausas_y_el_cierre_tampoco_admiten_una_fecha():
+    """La lista blanca numerica no ve el nombre de un mes.
+
+    `chequeo_coherencia_etiqueta_modo` solo miraba APOYO, asi que "vence en
+    noviembre" pasaba en una pausa.
+    """
+    for modo in ("APOYO", "PAUSA_RECHAZO", "CIERRE"):
+        estado = {"modo": modo, "puedes_ofrecer_continuar": False, "limites_ya_dichos": []}
+        r = validar(salida("Eso vence en noviembre.", etiqueta="cuidadora_agotada"),
+                    estado, {})
+        assert not r.ok, modo
+        assert r.validadores["coherencia_etiqueta_modo"] == "falla", modo
+
+
+def test_pausa_compra_con_el_calculo_si_autoriza_sus_dos_cifras():
+    """Es la excepcion: si ella pidio ver cuanto le suma la cuota, el backend
+    inyecta el minimo y el minimo nuevo, y esas dos se pueden decir."""
+    datos = {"minimo": {"valor": 74350, "estado": "confirmado"},
+             "minimo_con_cuota": {"valor": 84350, "estado": "confirmado"}}
     estado = {"modo": "PAUSA_COMPRA", "puedes_ofrecer_continuar": False,
               "limites_ya_dichos": []}
-    r = validar(salida("Tu saldo es $1.064.000."), estado, DATOS_E2,
-                pidio_calculo_cuota=True)
+    r = validar(salida("Tu minimo pasaria de $74.350 a $84.350."), estado, datos)
 
-    assert not r.ok
-    assert r.validadores["lista_blanca_numerica"] == "falla"
+    assert r.ok
+    # Pero una cifra que no viajo sigue siendo una alucinacion.
+    r2 = validar(salida("Tu saldo es $1.064.000."), estado, datos)
+    assert not r2.ok
 
 
 def test_no_es_para_tanto_es_frase_prohibida():

@@ -45,77 +45,67 @@ def seudonimo(conv):
     return "c-" + hashlib.sha256(str(conv).encode("utf-8")).hexdigest()[:12]
 
 
-def registrar(conv, turno, entrada, prefiltro, estado_antes, contexto,
-              modelo, salida_cruda, resultado, estado_despues,
-              regla_aplicada=None, ruta=None, intentos=1,
-              latencia_total_ms=None):
-    """Los tres campos que hacen que esto sirva: regla_aplicada, validadores
-    y override."""
-    linea = {
-        "conv": seudonimo(conv),
-        "turno": turno,
-        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "entrada": entrada,
-        "prefiltro": {"disparo": prefiltro[0], "patron": prefiltro[1]},
-        "estado_antes": estado_antes,
-        "contexto_inyectado": {
-            "campos": _campos(contexto),
-            "movimientos": _movimientos(contexto),
-        },
-        "modelo": modelo,
-        # `modelo.latencia_ms` es solo la ultima llamada. Un turno con
-        # reintento de validacion hace dos, y sin esto la traza no lo mostraba.
-        "intentos": intentos,
-        "latencia_total_ms": latencia_total_ms,
-        "salida_cruda": salida_cruda,
-        "validadores": resultado.validadores,
-        "override": resultado.override,
-        "enviado": resultado.enviado,
-        "estado_despues": estado_despues,
-        "regla_aplicada": regla_aplicada,
-    }
+def _escribir(linea, ruta=None):
     destino = _destino(ruta)
-    if destino is None:
-        # Traza apagada: la linea se devuelve igual (los tests y el pitch la
-        # usan en memoria) pero no toca el disco.
-        return linea
+    if not destino:
+        return None
+    linea = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **linea}
     with open(destino, "a", encoding="utf-8") as f:
         f.write(json.dumps(linea, ensure_ascii=False) + "\n")
-    return linea
+    return destino
 
 
-def _campos(contexto):
-    """De 'minimo: $74.350  (confirmado)' a 'minimo:confirmado'. Se guarda el
-    nombre y el estado, no el valor: el valor ya esta en el fixture."""
-    dentro = False
-    campos = []
-    for linea in (contexto or "").split("\n"):
-        if linea.startswith("DATOS_DISPONIBLES"):
-            dentro = True
-            continue
-        if dentro:
-            if not linea.strip():
-                break
-            if linea.strip() == "ninguno":
-                break
-            nombre = linea.split(":", 1)[0].strip()
-            estado = "confirmado"
-            if "(" in linea:
-                estado = linea.rsplit("(", 1)[1].rstrip(")").strip()
-            campos.append(f"{nombre}:{estado}")
-    return campos
+def registrar_clasificacion(conv, entrada, prefiltro, modo, contexto, modelo,
+                            salida_cruda, etiqueta, ruta=None,
+                            latencia_total_ms=None):
+    """El paso 1. No lleva ninguna cifra porque la llamada no recibe ninguna."""
+    disparo, patron = prefiltro
+    return _escribir({
+        "paso": "clasificacion",
+        "conv": seudonimo(conv),
+        "entrada": entrada,
+        "modo": modo,
+        "prefiltro": {"disparo": disparo, "patron": patron},
+        "modelo": modelo,
+        "salida_cruda": salida_cruda,
+        "etiqueta": etiqueta,
+        "contexto": contexto,
+        "latencia_total_ms": latencia_total_ms,
+    }, ruta)
 
 
-def _movimientos(contexto):
-    dentro = False
-    movs = []
-    for linea in (contexto or "").split("\n"):
-        if linea.startswith("MOVIMIENTOS PERMITIDOS"):
-            dentro = True
-            continue
-        if dentro and linea.startswith("- "):
-            movs.append(linea[2:])
-    return movs
+def registrar_redaccion(conv, entrada, modo, etiqueta, contexto, modelo,
+                        salida_cruda, enviado, validadores, regla_aplicada=None,
+                        ruta=None, intentos=1, movimientos=None, campos=None,
+                        calculos=None, latencia_total_ms=None):
+    """El paso 2.
+
+    `campos`, `calculos` y `movimientos` llegan explicitos, no se deducen del
+    texto del contexto. Antes se parseaban, y el parseo omitia el bloque "solo
+    si ella lo pide" (en E0 viajaban 9 campos y la traza anotaba `[]`) y tomaba
+    su encabezado como si fuera un campo. Quien leyera la traza concluia que el
+    modelo no tenia el dato, y era falso.
+    """
+    return _escribir({
+        "paso": "redaccion",
+        "conv": seudonimo(conv),
+        "entrada": entrada,
+        "modo": modo,
+        "etiqueta": etiqueta,
+        "inyectado": {
+            "campos": list(campos or []),
+            "calculos": list(calculos or []),
+            "movimientos": list(movimientos or []),
+        },
+        "modelo": modelo,
+        "intentos": intentos,
+        "salida_cruda": salida_cruda,
+        "validadores": validadores,
+        "regla_aplicada": regla_aplicada,
+        "enviado": enviado,
+        "contexto": contexto,
+        "latencia_total_ms": latencia_total_ms,
+    }, ruta)
 
 
 def leer(ruta=None):
@@ -127,25 +117,29 @@ def leer(ruta=None):
 
 
 def traza(conv=None, ruta=None):
-    """Resumen legible de una conversacion. Esto es lo que se muestra en el
-    pitch: ella dijo esto, se etiqueto asi, se disparo esta regla."""
+    """Resumen legible de una conversacion.
+
+    Esto es lo que se muestra en el pitch: ella dijo esto, se etiqueto asi, se
+    disparo esta regla. Con el turno en dos pasos, cada turno son dos lineas y
+    se muestran juntas.
+    """
     buscado = seudonimo(conv) if conv else None
     salida = []
     for t in leer(ruta):
-        if buscado and t["conv"] != buscado:
+        if buscado and t.get("conv") != buscado:
             continue
-        fallas = [k for k, v in t["validadores"].items() if v == "falla"]
-        salida.append(
-            "t{:<2} {:<6} {:<24} {}{}".format(
-                t["turno"],
-                t["estado_antes"].get("modo", "?"),
-                (t["salida_cruda"] or {}).get("etiqueta", "-"),
-                t.get("regla_aplicada") or "-",
-                ("  [override: {}]".format(t["override"]["motivo"]))
-                if t["override"]["aplicado"]
-                else ("  [falla: {}]".format(", ".join(fallas)) if fallas else ""),
-            )
-        )
+        if t.get("paso") == "clasificacion":
+            modelo = (t["modelo"] or {}).get("nombre", "-")
+            marca = "prefiltro" if t["prefiltro"]["disparo"] else modelo
+            salida.append("  clasifica {:<6} -> {:<24} [{}]".format(
+                t.get("modo", "?"), t.get("etiqueta", "-"), marca))
+            continue
+        fallas = [k for k, v in (t.get("validadores") or {}).items() if v == "falla"]
+        detalle = t.get("regla_aplicada") or "-"
+        if fallas:
+            detalle += "  [falla: {}]".format(", ".join(fallas))
+        salida.append("  redacta  {:<6}    {:<24} {}".format(
+            t.get("modo", "?"), t.get("etiqueta", "-"), detalle))
     return "\n".join(salida)
 
 

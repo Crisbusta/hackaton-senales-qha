@@ -116,6 +116,7 @@ ETIQUETAS = [
     "pide_consejo",
     "pregunta_dicom",
     "pregunta_identidad",
+    "saludo",
     "no_texto",
     "ambiguo",
     "cierre",

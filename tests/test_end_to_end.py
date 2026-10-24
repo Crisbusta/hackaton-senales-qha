@@ -9,7 +9,7 @@ from twilio.request_validator import RequestValidator
 
 from app.core.config import Settings, get_settings
 from app.main import create_app
-from app.modules.agent.mock import DECLINE_REPLY, GREETING_AFTER_DECLINE_REPLY, GREETING_REPLY
+from app.modules.agent.texts import TEXTOS_FIJOS, TEXTOS_RESPALDO
 
 TOKEN = "test-auth-token"
 BASE = "https://contigo.example.com"
@@ -34,7 +34,12 @@ def send(client: TestClient, body: str, sid: str) -> list[str]:
 
 
 def test_greeting_reply(client: TestClient) -> None:
-    assert send(client, "Hola", "SM1") == [GREETING_REPLY]
+    """Un saludo recibe una respuesta, sin cifras. La prosa del mock no es la
+    voz del producto, asi que no se fija aqui."""
+    respuestas = send(client, "Hola", "SM1")
+
+    assert len(respuestas) == 1
+    assert respuestas[0].strip()
 
 
 def test_duplicate_delivery_gets_empty_twiml(client: TestClient) -> None:
@@ -44,8 +49,12 @@ def test_duplicate_delivery_gets_empty_twiml(client: TestClient) -> None:
 
 
 def test_decline_is_remembered_across_messages(client: TestClient) -> None:
-    assert send(client, "Prefiero no verlo todavía", "SM1") == [DECLINE_REPLY]
-    assert send(client, "Hola", "SM2") == [GREETING_AFTER_DECLINE_REPLY]
+    assert send(client, "Prefiero no verlo todavía", "SM1") == [
+        TEXTOS_FIJOS["rechazo_pausa"]
+    ]
+    # Tras la negativa el modo es PAUSA_RECHAZO, y un saludo no la saca de ahi:
+    # solo la retoma voluntaria lo hace (AB6).
+    assert send(client, "Hola", "SM2") == [TEXTOS_RESPALDO["PAUSA_RECHAZO"]]
 
 
 def test_statement_pdf_through_the_signed_webhook(client: TestClient) -> None:

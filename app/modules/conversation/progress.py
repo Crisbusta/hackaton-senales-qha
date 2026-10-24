@@ -10,11 +10,11 @@ from dataclasses import dataclass
 
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
     ConversationEvent,
     ConversationMode,
     FieldStatus,
     FinancialField,
+    WriteRequest,
 )
 from app.modules.conversation.figures import amounts_in
 from app.modules.conversation.schemas import ConversationState, TimelineEntry, utc_now
@@ -118,7 +118,7 @@ def record_turn(
     state: ConversationState,
     previous_mode: ConversationMode,
     reply: str,
-    request: AgentRequest,
+    request: WriteRequest,
     intent: str,
     event: ConversationEvent | None,
 ) -> list[str]:

@@ -33,7 +33,7 @@ def _settings(monkeypatch):
 def test_the_fallback_model_gets_one_try(monkeypatch):
     usados = []
 
-    def falla_el_principal(model, messages, temperature):
+    def falla_el_principal(model, messages, temperature, schema=None):
         usados.append(model)
         if len(usados) == 1:
             raise APITimeoutError(request=None)
@@ -93,7 +93,7 @@ def test_the_fallback_is_skipped_when_it_would_not_fit(monkeypatch):
     monkeypatch.setattr(client, "get_settings", lambda: ajustes)
     usados = []
 
-    def falla(model, messages, temperature):
+    def falla(model, messages, temperature, schema=None):
         usados.append(model)
         raise APITimeoutError(request=None)
 

@@ -4,10 +4,11 @@ import pytest
 
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
-    AgentResponse,
+    AgentReply,
+    Classification,
     ConversationEvent,
     ConversationMode,
+    Intent,
 )
 from app.modules.agent.mock import MockAgent
 from app.modules.banking.provider import MockBankProvider
@@ -15,31 +16,31 @@ from app.modules.conversation.repository import InMemoryConversationRepository
 from app.modules.conversation.service import NO_FIGURES_REPLY, ConversationService
 from app.modules.whatsapp.schemas import IncomingMessage
 from app.shared.exceptions import IntegrationError
+from tests.conftest import TwoStepAgent, turno
 
 USER = "whatsapp:+56912345678"
 USER_ID = "+56912345678"
 
 
-class SpyAgent:
-    """Devuelve respuestas preprogramadas y guarda los requests recibidos."""
-
-    def __init__(self, *responses: AgentResponse) -> None:
-        self.responses = list(responses)
-        self.requests: list[AgentRequest] = []
-
-    async def process(self, request: AgentRequest) -> AgentResponse:
-        self.requests.append(request)
-        return self.responses.pop(0) if self.responses else AgentResponse(message="ok")
+class SpyAgent(TwoStepAgent):
+    """El doble compartido de `conftest`, con el nombre que ya usaban estos
+    tests. Recibe pares (Classification, AgentReply): usa `turno()`."""
 
 
 class SlowAgent:
-    async def process(self, request: AgentRequest) -> AgentResponse:
+    async def classify(self, request):
+        return Classification(intent=Intent.OFF_TOPIC)
+
+    async def write(self, request):
         await asyncio.sleep(1)
-        return AgentResponse(message="tarde")
+        return AgentReply(message="tarde")
 
 
 class BrokenAgent:
-    async def process(self, request: AgentRequest) -> AgentResponse:
+    async def classify(self, request):
+        return Classification(intent=Intent.OFF_TOPIC)
+
+    async def write(self, request):
         raise RuntimeError("provider exploded")
 
 
@@ -111,7 +112,7 @@ def test_duplicate_message_sid_is_ignored() -> None:
 
 def test_explicit_decline_is_persisted_and_sent_to_agent() -> None:
     agent = SpyAgent(
-        AgentResponse(message="ok", event=ConversationEvent.DECLINED_BALANCE_REVIEW),
+        turno("ok", event=ConversationEvent.DECLINED_BALANCE_REVIEW),
     )
     service, repo = make_service(agent)
 
@@ -128,8 +129,8 @@ def test_explicit_decline_is_persisted_and_sent_to_agent() -> None:
 
 def test_current_request_overrides_previous_decline() -> None:
     agent = SpyAgent(
-        AgentResponse(message="ok", event=ConversationEvent.DECLINED_BALANCE_REVIEW),
-        AgentResponse(message="ok", event=ConversationEvent.REQUESTED_BALANCE),
+        turno("ok", event=ConversationEvent.DECLINED_BALANCE_REVIEW),
+        turno("ok", event=ConversationEvent.REQUESTED_BALANCE),
     )
     service, repo = make_service(agent)
 
@@ -141,7 +142,7 @@ def test_current_request_overrides_previous_decline() -> None:
 
 def test_crisis_event_switches_to_support_mode() -> None:
     agent = SpyAgent(
-        AgentResponse(message="ok", event=ConversationEvent.CRISIS_SUPPORT_NEEDED),
+        turno("ok", event=ConversationEvent.CRISIS_SUPPORT_NEEDED),
     )
     service, repo = make_service(agent)
 
@@ -153,8 +154,8 @@ def test_crisis_event_switches_to_support_mode() -> None:
 @pytest.mark.parametrize("reply", ["Debes $74.350", "Tu saldo es 1.234.567", "Son 74350 pesos"])
 def test_figures_are_blocked_after_decline(reply: str) -> None:
     agent = SpyAgent(
-        AgentResponse(message="ok", event=ConversationEvent.DECLINED_BALANCE_REVIEW),
-        AgentResponse(message=reply),
+        turno("ok", event=ConversationEvent.DECLINED_BALANCE_REVIEW),
+        turno(reply),
     )
     service, repo = make_service(agent)
 
@@ -167,22 +168,33 @@ def test_figures_are_blocked_after_decline(reply: str) -> None:
 
 def test_unverifiable_figures_never_reach_her() -> None:
     # Sin banco no hay de dónde verificar la cifra: no se envía (principio 5).
-    service, _ = make_service(SpyAgent(AgentResponse(message="Tu pago mínimo es $74.350")))
+    service, _ = make_service(SpyAgent(turno("Tu pago mínimo es $74.350")))
 
     assert "74.350" not in (run(service, "cuánto debo", "SM1") or "")
 
 
 def test_mock_flow_respects_decline_end_to_end() -> None:
-    service, _ = make_service(MockAgent())
+    """Tras la negativa no viaja ninguna cifra al modelo.
+
+    Antes esto se comprobaba por el texto: el mock tenia una respuesta
+    especial para saludar despues de una negativa. Lo que de verdad importa
+    es que el contexto quede vacio: lo que no esta en el contexto no se puede
+    filtrar, ni por error del modelo ni por un fallo del validador.
+    """
+    agent = SpyAgent(
+        _resp("Está bien, lo dejamos acá.", Intent.DECLINED,
+              ConversationEvent.DECLINED_BALANCE_REVIEW, protected=True),
+        _resp("Acá estoy cuando quieras.", Intent.GREETING_ONLY),
+    )
+    service, repo = make_service(agent, bank=MockBankProvider("patricia"))
 
     run(service, "Prefiero no verlo todavía", "SM1")
-    reply = run(service, "Hola", "SM2")
+    reply = run(service, "hola", "SM2")
 
-    assert reply and "números" in reply
-    assert not any(ch.isdigit() for ch in reply)
-
-
-# --- Errores -------------------------------------------------------------
+    assert state_of(repo).preferences[PREF_SHOW_FINANCIAL_FIGURES] is False
+    assert agent.last_write.financial_data == {}
+    assert agent.last_write.calculations == {}
+    assert reply and not any(c.isdigit() for c in reply)
 
 
 def test_agent_timeout_raises_integration_error() -> None:
@@ -216,14 +228,12 @@ def test_the_crisis_line_survives_the_no_figures_preference() -> None:
     recibía NO_FIGURES_REPLY en vez de la línea de ayuda.
     """
     agent = SpyAgent(
-        AgentResponse(
-            message="Está bien, lo dejamos acá.",
-            intent="rechazo_pausa",
+        turno("Está bien, lo dejamos acá.", intent="rechazo_pausa",
             event=ConversationEvent.DECLINED_BALANCE_REVIEW,
             protected_text=True,
         ),
-        AgentResponse(
-            message=CRISIS_TEXT,
+        turno(
+            CRISIS_TEXT,
             intent="angustia_fuerte",
             event=ConversationEvent.CRISIS_SUPPORT_NEEDED,
             protected_text=True,
@@ -246,13 +256,11 @@ def test_a_model_written_reply_with_figures_is_still_blocked() -> None:
     """La guarda anterior no debe abrir la puerta: lo que redactó el modelo
     sigue filtrándose."""
     agent = SpyAgent(
-        AgentResponse(
-            message="Está bien.",
-            intent="rechazo_pausa",
+        turno("Está bien.", intent="rechazo_pausa",
             event=ConversationEvent.DECLINED_BALANCE_REVIEW,
             protected_text=True,
         ),
-        AgentResponse(message="Tu saldo es $1.064.000.", intent="solicitud_informacion"),
+        turno("Tu saldo es $1.064.000.", intent="solicitud_informacion"),
     )
     service, _ = make_service(agent)
 
@@ -264,9 +272,8 @@ def test_a_model_written_reply_with_figures_is_still_blocked() -> None:
 # --- las reglas anti-bucle a traves del servicio ------------------------
 
 def _resp(message, intent, event=None, protected=False):
-    return AgentResponse(
-        message=message, intent=intent, event=event, protected_text=protected
-    )
+    """Un turno completo del doble: su clasificacion y su redaccion."""
+    return turno(message, intent=intent, event=event, protected_text=protected)
 
 
 def test_the_offer_to_continue_is_made_once_per_step() -> None:
@@ -348,9 +355,11 @@ def test_the_request_carries_what_she_already_reached() -> None:
     run(service, "ya, sigamos", "SM2")
     run(service, "hola, ya estoy mejor", "SM3")
 
-    assert agent.requests[2].mode is ConversationMode.BALANCE_OVERVIEW
+    # El turno 3 ya redacta en E0: la retoma corre antes de redactar, asi que
+    # el redactor nunca ve el modo viejo. Lo que necesita para reconocer lo ya
+    # visto es el maximo, que se conserva (AB6).
+    assert agent.requests[2].mode is ConversationMode.GREETING
     assert agent.requests[2].max_mode_reached is ConversationMode.BALANCE_OVERVIEW
-    assert agent.requests[2].previous_intent == "disposicion_explorar"
     # tras retomar vuelve a E0, pero el maximo se conserva
     assert state_of(repo).mode is ConversationMode.GREETING
     assert state_of(repo).max_mode_reached is ConversationMode.BALANCE_OVERVIEW

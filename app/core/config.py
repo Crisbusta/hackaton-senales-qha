@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     openai_fallback_model: str = "gpt-6-luna"
     # Los modelos de razonamiento solo aceptan el default; el cliente omite
     # el parámetro cuando el modelo lo rechaza.
+    # El clasificador puede usar un modelo distinto del redactor. Vacio = el
+    # mismo. Medido: el barato da 0,72 s pero 9 de 12 etiquetas, y su unico
+    # error grave fue no aplicar la prioridad del rechazo. Queda como perilla
+    # para poder medirlo sin tocar codigo.
+    openai_classify_model: str = ""
     openai_temperature: float = 0.3
     # Medido contra el proveedor real: p50 ~4,5 s, pero la cola llega a 6,8 s
     # en respuestas perfectamente válidas, así que 7 s cortaba 2 de cada 8.

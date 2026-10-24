@@ -51,32 +51,41 @@ Twilio POST /webhooks/whatsapp          whatsapp/router.py, security.py
 ConversationService.handle()            conversation/service.py
   1. dedup por MessageSid → duplicado: TwiML vacío
   2. /reiniciar desde DEMO_ADMIN_NUMBERS → borra el estado y responde
-  3. PDF adjunto (application/pdf) → statement_intake: descarga desde Twilio (solo api.twilio.com,
-     ≤5 MB, en memoria) → parse_statement + validate → state.statement → texto fijo SIN cifras,
-     sin llamar al agente. Imágenes/audios siguen el flujo normal
+  3. PDF adjunto (T07) → statement_intake, se confirma sin cifras y termina el turno
   4. AB8: un acuse vacío ("ok", "gracias") se responde una sola vez
-  5. simulation.plan_turn(): "¿y si pago 100 mil?" desde E2+ → modo E4 ANTES de llamar al agente;
-     opción 2 en PAUSA_COMPRA → installment_calc_requested
-  6. banco (si hay consentimiento) + PDF guardado, unidos por merge_sources → financial_data
-     (nada si pidió ocultar cifras)
-     - precarga: en E0–E4 viajan TODOS los campos de la Escalera (figures.fields_to_send)
-     - calculations del motor financiero (solo si calculations_allowed)
-  7. agent.process() con asyncio.wait_for(AGENT_TIMEOUT_S)  → fallo/timeout = IntegrationError
-  8. apply_event() + transitions.siguiente_modo()  (el modo cambia DESPUÉS de responder)
-  9. _reanswer_on_mode_entry(): si el turno entró a PAUSA_COMPRA o retomó desde una pausa/APOYO/
-     CIERRE hacia E0, se pide la respuesta otra vez con el modo nuevo (la clasificación es la del
-     primer llamado; nunca se re-redacta un texto de crisis)
- 10. _enforce_mode_figures(): la respuesta solo puede traer montos del modo con que se llamó /
-     en que terminó, o los que ella escribió → si no, 1 reintento → si no, texto sin cifras
- 11. si pidió no ver cifras y hay un monto → NO_FIGURES_REPLY (salvo protected_text)
- 12. progress.record_turn() (avances + timeline) → repository.save()
+
+  --- 1. CLASIFICAR ---
+  5. agent.classify(): etiqueta, esencial, monto mencionado, ritmo.
+     Esta llamada NO recibe ninguna cifra: ni financial_data, ni calculations, ni
+     el historial sin enmascarar. No puede filtrar un monto porque no tiene ninguno.
+
+  --- 2. DECIDIR (reglas deterministas, sin modelo) ---
+  6. apply_event() + transitions.siguiente_modo() → el modo FINAL del turno
+  7. installment_essential / installment_calc_requested
+  8. simulation.plan_turn(): "¿y si pago 100 mil?" → E4 con ese monto
+  9. banco + PDF (si hay consentimiento y no pidió ocultar cifras) → financial_data
+     con EXACTAMENTE los campos de fields_for_mode(modo_final, etiqueta)
+ 10. calculations del motor financiero (solo si calculations_allowed)
+
+  --- 3. REDACTAR ---
+ 11. agent.write(): los datos exactos y los movimientos ya resueltos. El redactor
+     no evalúa ninguna condición de estado porque no le llega ninguna.
+ 12. si pidió no ver cifras y hay un monto → NO_FIGURES_REPLY (salvo protected_text)
+ 13. red de seguridad: un monto que no viajó → STEP_BY_STEP_REPLY (sin reintento)
+ 14. progress.record_turn() (avances + timeline) → repository.save()
   → TwiML (un error del handler responde 200 con un texto amable, nunca 5xx)
 ```
 
-El "turno de atraso" (el modo cambia después de que el agente responde) es la causa raíz de
-varias decisiones: la precarga + verificación (6, 10), la detección previa de T10 (5) y el
-re-llamado al entrar a un modo (9). Si aparece un bug de "respondió como si estuviera en el modo
-anterior", empieza por ahí.
+**El "turno de atraso" ya no existe.** Mientras el turno fue una sola llamada, el modelo
+redactaba con el modo de ENTRADA y el modo cambiaba después: de ahí venían la precarga con su
+verificación posterior, la detección previa de T10 como forma de cambiar el modo, y el re-llamado
+al entrar a un modo (`_reanswer_on_mode_entry`). Los tres existían para compensar el orden y se
+borraron con él. Medido contra el modelo real: "sí, veamos" pasó de "¿Qué te gustaría saber
+primero?" a "tu pago vence el 3 de noviembre de 2026", y las dos opciones de PAUSA_COMPRA llegan
+en el mismo turno en vez de perderse por presupuesto.
+
+Si aparece un bug de "respondió como si estuviera en otro modo", mira qué modo recibió `write()`
+en la traza: ahí está el modo final del turno.
 
 ## Módulos y dueños
 
@@ -96,12 +105,19 @@ diferida), repositorio, banco y servicio en `app.state`.
 
 ## Contrato (`agent/interface.py`) y documentos
 
-- `AgentRequest` / `AgentResponse` / `Agent` (Protocol). `ConversationMode` (E0–E4,
-  PAUSA_RECHAZO, PAUSA_COMPRA, APOYO, CIERRE) lo decide **solo el backend**.
+- `Agent` (Protocol) tiene dos pasos: `classify(ClassifyRequest) -> Classification` y
+  `write(WriteRequest) -> AgentReply`. El backend llama a los dos con su decisión de estado en
+  medio. `ConversationMode` (E0–E4, PAUSA_RECHAZO, PAUSA_COMPRA, APOYO, CIERRE) lo decide **solo
+  el backend**, y `WriteRequest.mode` es el modo FINAL del turno.
+- Los cuatro modelos son `extra="forbid"`: un campo que no existe es un error, no algo que se
+  descarte en silencio.
+- `ClassifyRequest` no tiene ningún campo donde quepa un monto: es una garantía por construcción,
+  no una regla que haya que vigilar.
 - `FIELDS_BY_MODE` + `fields_for_mode()` es la **única** tabla de qué dato pertenece a qué modo;
   la usan backend y agente.
-- `Intent` (16 etiquetas, StrEnum) pero `AgentResponse.intent` es `str`: comparar siempre contra
-  `Intent.X` sin asumir que el valor está en el enum.
+- `Intent` (17 etiquetas, StrEnum) pero `Classification.intent` es `str`: comparar siempre contra
+  `Intent.X` sin asumir que el valor está en el enum. `UNKNOWN` está reservado para "no hubo
+  clasificación" (el proveedor falló); una etiqueta que el modelo invente viaja tal cual.
 - Montos `int` (CLP). Fechas y tasas viajan como texto formateado; si hace falta operar una tasa,
   `Decimal`.
 - Claves del simulador en `calculations`: `meses_pagando_*`, `intereses_pagando_*`,
@@ -179,8 +195,6 @@ no coinciden.
   recepción (`statement_intake.*_REPLY`) están pendientes de validación de C. Conciliación: el PDF
   manda; si difiere del banco → `UNRELIABLE`; si le falta un dato y el banco lo tiene, se usa el del
   banco. El simulador (T10) todavía usa solo el banco. Los pasos con PDF del runner se omiten.
-- **Salir de una pausa pidiendo un dato** (no con "hola") todavía responde con el texto de pausa
-  en ese turno (solo la retoma hacia E0 se re-pregunta).
 - **Detección de T10 por reglas**: solo con montos explícitos ("100 mil", "$100.000", "80 lucas").
 - **`faltante_para_gastos_esenciales`**: el texto lo define C; el agente no debe mencionarlo hasta
   que esté validado.
@@ -188,12 +202,8 @@ no coinciden.
   necesita `OPENAI_TIMEOUT_S` libres del presupuesto (`AGENT_TIMEOUT_S − AGENT_BUDGET_MARGIN_S`),
   y un timeout del principal consume justo ese tiempo. Con los valores por defecto (9 de 11 s) solo
   cubre los errores rápidos (401, 429 inmediato), nunca los lentos.
-- **La traza no registra lo que de verdad se inyectó**: `observability._campos()` omite el bloque
-  "solo si ella lo pide" (en E0 viajan 9 campos y anota `[]`) y toma su encabezado como si fuera un
-  campo. Quien la lea concluye que el modelo no tenía el dato, y es falso.
-- **El re-llamado al entrar a un modo se pierde por presupuesto**: medido con el modelo real, al
-  entrar a PAUSA_COMPRA el segundo llamado produjo la respuesta correcta (las dos opciones, los
-  seis chequeos en `ok`) y el backend la descartó porque el plazo restante quedó 0,4 s corto.
-- **Precarga**: hay que medir cuánto sobreexpone el modelo los datos del bloque "solo si lo pide"
-  (si supera ~10–20 % de los turnos, revisar el enfoque).
+- **Dos llamadas en serie**: medido contra el modelo real, 2–3,5 s por llamada y 5–9 s por turno.
+  Cabe en `AGENT_TIMEOUT_S`, pero el peor caso no cabe en la ventana de ~15 s de Twilio. Si pasa a
+  doler, la salida es responder por la API REST de Twilio en vez de TwiML, que elimina el techo.
+  `OPENAI_CLASSIFY_MODEL` permite probar un clasificador más rápido sin tocar código.
 - `railway.json` (Config as Code) está deprecado por Railway a partir del 2026-12-01.

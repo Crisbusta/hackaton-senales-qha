@@ -20,8 +20,6 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
-from app.modules.agent.interface import fields_for_mode
-from app.modules.agent.prompts import ESCALONES
 from app.modules.agent.texts import (
     CIERRE_OFERTA,
     ETIQUETAS_TEXTO_FIJO,
@@ -90,37 +88,14 @@ def enmascarar_numeros(texto):
     return RE_NUMERO.sub("N", texto.replace("*4141", "N"))
 
 
-def campos_autorizados(datos, modo, etiqueta, pidio_calculo_cuota=False):
-    """Los campos cuyas cifras el modelo puede usar en ESTE turno.
-
-    La regla es una sola: se autoriza lo que el contexto le MOSTRO. Es lo
-    que hace verdadero el docstring de `numeros_permitidos`, y lo que evita
-    que la capa 4 acepte una cifra que el modelo no vio.
-
-    En los escalones eso incluye el segundo bloque de DATOS_DISPONIBLES
-    ("solo si ella lo pide en este mensaje"), porque ahi la precarga del #12
-    si se lo muestra. Quien verifica que la respuesta corresponda al modo en
-    que TERMINO el turno es el backend (`conversation.figures`), que conoce
-    el modo final; el agente no puede, porque el modo se decide con la
-    etiqueta que el agente acaba de producir. Medido el 23 oct: con la
-    regla anterior, a "cuando vence?" en E0 el modelo contestaba bien
-    ("vence el 3 de noviembre de 2026") y la lista blanca lo descartaba.
-
-    Fuera de los escalones no hay segundo bloque: en las pausas, APOYO y
-    CIERRE se autoriza unicamente lo que el modo admite, que es nada. Esa
-    parte no se relaja, y es la que sostiene C01 y C10.
-    """
-    if modo in ESCALONES:
-        return dict(datos or {})
-    permitidos = fields_for_mode(modo, etiqueta, pidio_calculo_cuota)
-    return {k: v for k, v in (datos or {}).items() if k in permitidos}
-
-
 def numeros_permitidos(datos, motor=None):
-    """Toda cifra de los campos autorizados mas la salida del motor T10.
+    """Toda cifra de los datos inyectados mas la salida del motor T10.
 
-    `datos` tiene que venir ya filtrado por `campos_autorizados`: esta
-    funcion no sabe en que modo esta y autoriza todo lo que recibe.
+    Autoriza todo lo que recibe, y eso ahora es correcto: con el turno en tres
+    pasos, el redactor recibe exactamente los campos del modo final. Antes
+    hacia falta `campos_autorizados()` para volver a filtrar por modo y por
+    etiqueta, porque la precarga mandaba toda la Escalera y el modo se decidia
+    despues. Ese filtro desaparecio con el orden.
     """
     permitidos = set(NUMEROS_SIEMPRE_PERMITIDOS)
     for campo in (datos or {}).values():
@@ -206,14 +181,22 @@ def chequeo_movimientos(mensaje, estado):
     return True, None
 
 
+# Modos sin ninguna cifra ni fecha. Las dos pausas y el cierre estaban fuera:
+# la lista blanca numerica ya atrapaba los montos (con datos vacios no autoriza
+# ninguno), pero el nombre de un mes pasaba. PAUSA_COMPRA no esta porque si
+# ella pidio el calculo de la cuota, ahi si viajan dos cifras.
+MODOS_SIN_CIFRAS = ("APOYO", "PAUSA_RECHAZO", "CIERRE")
+
+
 def chequeo_coherencia_etiqueta_modo(mensaje, estado):
-    if estado.get("modo") != "APOYO":
+    modo = estado.get("modo")
+    if modo not in MODOS_SIN_CIFRAS:
         return True, None
     if extraer_numeros(mensaje):
-        return False, "cifra en modo APOYO"
+        return False, f"cifra en modo {modo}"
     plano = normalizar(mensaje)
     if any(m in plano for m in MESES):
-        return False, "fecha en modo APOYO"
+        return False, f"fecha en modo {modo}"
     return True, None
 
 
@@ -277,17 +260,16 @@ def respaldo_sin_modelo(estado, motivo):
     )
 
 
-def validar(salida, estado, datos, motor=None, intento=1, pidio_calculo_cuota=False):
-    """salida: el dict de cuatro campos del modelo. estado/datos: lo inyectado.
+def validar(salida, estado, datos, motor=None, intento=1):
+    """salida: la etiqueta del turno y el mensaje redactado. datos: lo inyectado.
 
-    `datos` puede traer campos precargados que este turno no autoriza (#12);
-    la lista blanca numerica se arma solo con los que si, segun el modo y la
-    etiqueta que el modelo acaba de emitir.
+    `datos` llega exacto —son los campos del modo final—, asi que la lista
+    blanca numerica se arma con todos ellos y no hace falta volver a filtrar.
     """
     etiqueta = salida.get("etiqueta")
     mensaje = salida.get("mensaje") or ""
     modo = estado.get("modo", "E0")
-    autorizados = campos_autorizados(datos, modo, etiqueta, pidio_calculo_cuota)
+    autorizados = dict(datos or {})
 
     # Capa 3: la prosa no se mira, se descarta.
     if etiqueta == "angustia_fuerte" and modo == "APOYO":

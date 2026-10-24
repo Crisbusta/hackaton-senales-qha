@@ -19,18 +19,29 @@ from app.shared.exceptions import IntegrationError
 
 logger = logging.getLogger(__name__)
 
-# Structured output: etiqueta y mensaje en campos separados (capa 2 de las
-# cuatro de T05). Si el modelo devolviera un solo string, habría que
-# parsearlo y ahí se cuelan las alucinaciones.
-RESPONSE_SCHEMA = {
+# Structured output, uno por paso (capa 2 de las cuatro de T05). Si el modelo
+# devolviera un solo string habria que parsearlo, y ahi se cuelan las
+# alucinaciones.
+#
+# El de clasificacion no tiene campo de prosa: esa llamada no redacta. El de
+# redaccion no tiene etiqueta: la clasificacion ya ocurrio y pedirsela otra
+# vez solo invita a contradecirse.
+CLASSIFY_SCHEMA = {
     "type": "object",
     "properties": {
         "etiqueta": {"type": "string"},
         "esencial": {"type": ["boolean", "null"]},
         "monto_mencionado": {"type": ["number", "null"]},
-        "mensaje": {"type": "string"},
+        "ritmo": {"type": ["string", "null"], "enum": ["mas_lento", "todo_de_una", None]},
     },
-    "required": ["etiqueta", "esencial", "monto_mencionado", "mensaje"],
+    "required": ["etiqueta", "esencial", "monto_mencionado", "ritmo"],
+    "additionalProperties": False,
+}
+
+WRITE_SCHEMA = {
+    "type": "object",
+    "properties": {"mensaje": {"type": "string"}},
+    "required": ["mensaje"],
     "additionalProperties": False,
 }
 
@@ -62,15 +73,16 @@ def _get_client() -> OpenAI:
     return _client
 
 
-def _call_one(model: str, messages: list[dict], temperature: float):
+def _call_one(model: str, messages: list[dict], temperature: float, schema=None):
+    nombre = "contigo_classify" if schema is CLASSIFY_SCHEMA else "contigo_write"
     kwargs = {
         "model": model,
         "messages": messages,
         "response_format": {
             "type": "json_schema",
             "json_schema": {
-                "name": "contigo_turn",
-                "schema": RESPONSE_SCHEMA,
+                "name": nombre,
+                "schema": schema or WRITE_SCHEMA,
                 "strict": True,
             },
         },
@@ -92,12 +104,18 @@ def _call_one(model: str, messages: list[dict], temperature: float):
         return _get_client().chat.completions.create(**kwargs)
 
 
-def call_model(static_prompt: str, context: str, correction: str | None = None):
-    """-> (dict con los cuatro campos, metadata del turno).
+def call_model(static_prompt: str, context: str, correction: str | None = None,
+               schema=None, model: str | None = None):
+    """-> (dict con los campos del esquema, metadata del turno).
 
-    Si el modelo principal falla, se reintenta una vez con el de respaldo:
-    los dos empataron en precisión (15/16), así que cambiar no degrada la
-    clasificación.
+    `schema` decide el paso: CLASSIFY_SCHEMA o WRITE_SCHEMA. `model` permite
+    que la clasificación use un modelo distinto del de redacción (medido: el
+    barato da 0,72 s pero 9 de 12, y su único error grave fue no aplicar la
+    prioridad del rechazo, que el prompt ahora escribe como no negociable).
+
+    Si el modelo principal falla, se reintenta una vez con el de respaldo.
+    OJO: con los valores por defecto ese reintento es inalcanzable cuando el
+    principal se cae por timeout; está documentado en CLAUDE.md.
     """
     settings = get_settings()
     messages = [
@@ -108,9 +126,9 @@ def call_model(static_prompt: str, context: str, correction: str | None = None):
         messages.append({"role": "user", "content": correction})
 
     started = time.monotonic()
-    model = settings.openai_model
+    model = model or settings.openai_model
     try:
-        response = _call_one(model, messages, settings.openai_temperature)
+        response = _call_one(model, messages, settings.openai_temperature, schema)
     except OpenAIError as exc:
         restante = settings.agent_turn_budget_s - (time.monotonic() - started)
         if restante < settings.openai_timeout_s:
@@ -124,7 +142,7 @@ def call_model(static_prompt: str, context: str, correction: str | None = None):
         logger.warning("modelo principal %s fallo (%s); usando respaldo", model, exc)
         model = settings.openai_fallback_model
         try:
-            response = _call_one(model, messages, settings.openai_temperature)
+            response = _call_one(model, messages, settings.openai_temperature, schema)
         except OpenAIError as fallback_exc:
             # Los dos modelos fallaron: es un fallo de integración, no un
             # error interno. El webhook ya responde con su texto de

@@ -1,15 +1,25 @@
-"""T04 + T05: la implementación del agente contra el contrato de interface.
+"""T04 + T05: la implementacion del agente contra el contrato de interface.
 
-El código es dueño del estado, el modelo es dueño de las palabras. Acá no
-se decide ninguna transición: se traduce el `AgentRequest` que el backend
-ya calculó a los tres bloques que ve el modelo, y la salida del modelo a
-un `AgentResponse`.
+El codigo es dueno del estado, el modelo es dueno de las palabras. Aca no se
+decide ninguna transicion.
 
-Orden de un turno:
-  1. pre-filtro (capa 1): crisis explícita, sin llamar al modelo.
-  2. armar el contexto (T04) y llamar al modelo.
-  3. validar (capas 3-4): si falla, un reintento con la corrección.
-  4. registrar la traza (una línea JSONL por turno).
+El turno son dos pasos y este modulo implementa los dos:
+
+  classify(ClassifyRequest) -> Classification
+    1. pre-filtro (capa 1): crisis explicita, sin llamar al modelo.
+    2. una llamada que solo etiqueta. No recibe ninguna cifra.
+
+  write(WriteRequest) -> AgentReply
+    3. textos fijos (capa 3): crisis, rechazo y no_texto salen sin llamar al
+       modelo. Antes se llamaba igual y la prosa se descartaba despues.
+    4. los movimientos ya resueltos + los datos exactos del modo final, y una
+       llamada que solo redacta.
+    5. validar (capa 4): si falla, un reintento con la correccion; si vuelve a
+       fallar, el texto de respaldo del modo.
+
+El backend llama a los dos con su decision de estado en medio. Esa es toda la
+diferencia con el orden anterior, donde el modelo redactaba con el modo de
+entrada y el modo cambiaba despues.
 """
 
 import asyncio
@@ -19,238 +29,226 @@ import time
 from app.core.config import get_settings
 from app.modules.agent import observability as obs
 from app.modules.agent import prefilter, prompts, validators
-from app.modules.agent.client import call_model
+from app.modules.agent.client import CLASSIFY_SCHEMA, WRITE_SCHEMA, call_model
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
-    AgentResponse,
+    AgentReply,
+    Classification,
+    ClassifyRequest,
     ConversationEvent,
     ConversationMode,
     FieldStatus,
+    Intent,
+    WriteRequest,
 )
+from app.modules.agent.texts import ETIQUETAS_TEXTO_FIJO, TEXTOS_FIJOS
 from app.shared.exceptions import IntegrationError
 
 logger = logging.getLogger(__name__)
 
-# El contrato nombra los estados en inglés; el motor de validación los usa
-# en español porque es el idioma del documento que lee Patricia.
+# El contrato nombra los estados en ingles; el motor de validacion los usa en
+# espanol porque es el idioma del documento que lee Patricia.
 FIELD_STATUS_ES = {
     FieldStatus.CONFIRMED: "confirmado",
     FieldStatus.ABSENT: "ausente",
     FieldStatus.UNRELIABLE: "no confiable",
 }
 
-# Etiqueta del modelo -> evento del contrato. Solo se mapean las cuatro
-# inequívocas.
+# Etiqueta del modelo -> evento del contrato. Solo las cuatro inequivocas.
 INTENT_TO_EVENT = {
-    "angustia_fuerte": ConversationEvent.CRISIS_SUPPORT_NEEDED,
-    "rechazo_pausa": ConversationEvent.DECLINED_BALANCE_REVIEW,
-    "solicitud_informacion": ConversationEvent.REQUESTED_BALANCE,
-    "disposicion_explorar": ConversationEvent.ACCEPTED_NEXT_STEP,
+    Intent.DISTRESS: ConversationEvent.CRISIS_SUPPORT_NEEDED,
+    Intent.DECLINED: ConversationEvent.DECLINED_BALANCE_REVIEW,
+    Intent.INFO_REQUEST: ConversationEvent.REQUESTED_BALANCE,
+    Intent.WILLING_TO_EXPLORE: ConversationEvent.ACCEPTED_NEXT_STEP,
 }
 
-
-def _build_state(request: AgentRequest) -> dict:
-    max_mode = request.max_mode_reached or ConversationMode.GREETING
-    return {
-        "modo": request.mode.value,
-        "puedes_ofrecer_continuar": request.can_offer_continue,
-        "puedes_aclarar_ruta": request.can_clarify_route,
-        "limites_ya_dichos": list(request.already_stated_limits),
-        "escalon_maximo": max_mode.value,
-    }
+# Reservado para "no hubo clasificacion": el proveedor fallo. Una etiqueta que
+# el modelo invente fuera de la lista viaja tal cual, para que la traza la
+# registre; esta solo la pone este modulo.
+SIN_CLASIFICAR = "UNKNOWN"
 
 
-def _build_data(request: AgentRequest) -> dict:
-    """Traduce `financial_data` al formato del validador.
+def _historial(mensajes):
+    """Los ultimos turnos, para resolver referencias ("si", "la segunda")."""
+    return [{"rol": m.role, "texto": m.content} for m in mensajes]
 
-    Si ella pidió explícitamente no ver cifras, no se inyecta ninguna: lo
-    que no está en el contexto no se puede filtrar, ni por error del
-    modelo ni por un fallo del validador.
+
+def _datos(request: WriteRequest) -> dict:
+    """Traduce `financial_data` al formato del contexto y del validador.
+
+    Si ella pidio explicitamente no ver cifras, no se inyecta ninguna: lo que
+    no esta en el contexto no se puede filtrar, ni por error del modelo ni por
+    un fallo del validador.
     """
     if request.preferences.get(PREF_SHOW_FINANCIAL_FIGURES, True) is False:
         return {}
     return {
-        name: {"valor": field.value, "estado": FIELD_STATUS_ES[field.status]}
-        for name, field in request.financial_data.items()
+        nombre: {"valor": campo.value, "estado": FIELD_STATUS_ES[campo.status]}
+        for nombre, campo in request.financial_data.items()
     }
 
 
-def _build_calculations(request: AgentRequest) -> dict:
-    """Los cálculos admisibles en este turno.
-
-    `calculations` llega del backend sin pasar por el filtro por modo, así
-    que se filtra acá por el modo y por la preferencia. Lo que esta función
-    descarta no entra al contexto ni autoriza ninguna cifra en el
-    validador: las dos cosas leen el mismo diccionario.
-    """
+def _calculos(request: WriteRequest) -> dict:
     if request.preferences.get(PREF_SHOW_FINANCIAL_FIGURES, True) is False:
         return {}
     return prompts.calculos_visibles(
-        request.mode.value,
-        request.calculations,
+        request.mode.value, request.calculations,
         request.requested_installment_calculation,
     )
 
 
-def _backup_response(request, state, motivo, started, log_path):
-    """Respuesta determinista cuando el modelo no dio nada."""
-    result = validators.respaldo_sin_modelo(state, motivo)
-    obs.registrar(
-        conv=request.user_id,
-        intentos=1,
+def _presupuesto_para_otra_llamada(started: float) -> bool:
+    settings = get_settings()
+    return settings.agent_turn_budget_s - (time.monotonic() - started) >= settings.openai_timeout_s
+
+
+# --- paso 1: clasificar --------------------------------------------------
+
+
+def clasificar(request: ClassifyRequest, call=call_model, log_path=None) -> Classification:
+    """La etiqueta del turno. Esta llamada no ve ninguna cifra."""
+    started = time.monotonic()
+    disparo, patron = prefilter.revisar(request.message)
+    if disparo:
+        # Capa 1: la crisis explicita no pasa por el modelo.
+        obs.registrar_clasificacion(
+            conv=request.user_id, entrada=request.message, prefiltro=(True, patron),
+            modo=request.mode.value, contexto=None,
+            modelo={"nombre": "prefiltro", "latencia_ms": 0, "tokens_in": 0, "tokens_out": 0},
+            salida_cruda=None, etiqueta=Intent.DISTRESS, ruta=log_path,
+        )
+        return Classification(
+            intent=Intent.DISTRESS, event=ConversationEvent.CRISIS_SUPPORT_NEEDED
+        )
+
+    settings = get_settings()
+    contexto = prompts.contexto_clasificacion(
+        request.mode.value, request.message, _historial(request.recent_history)
+    )
+    try:
+        crudo, metadata = call(
+            prompts.CLASIFICADOR, contexto,
+            schema=CLASSIFY_SCHEMA,
+            model=settings.openai_classify_model or None,
+        )
+    except IntegrationError as exc:
+        # Sin clasificacion no hay turno que resolver. El backend deja el modo
+        # como esta y `write` responde con el texto de respaldo del modo, que
+        # es mucho mejor que dejarla sin respuesta. Esta es la capa 4.
+        logger.warning("sin clasificacion (%s); el turno va al texto de respaldo", exc)
+        return Classification(intent=SIN_CLASIFICAR)
+
+    etiqueta = (crudo or {}).get("etiqueta") or SIN_CLASIFICAR
+    obs.registrar_clasificacion(
+        conv=request.user_id, entrada=request.message, prefiltro=(False, None),
+        modo=request.mode.value, contexto=contexto, modelo=metadata,
+        salida_cruda=crudo, etiqueta=etiqueta, ruta=log_path,
         latencia_total_ms=int((time.monotonic() - started) * 1000),
-        turno=0,
-        entrada=request.message,
-        prefiltro=(False, None),
-        estado_antes=state,
-        contexto=None,
-        modelo={"nombre": motivo, "temp": None, "latencia_ms": None,
-                "tokens_in": 0, "tokens_out": 0},
-        salida_cruda=None,
-        resultado=result,
-        estado_despues=state,
-        regla_aplicada=motivo,
+    )
+    return Classification(
+        intent=etiqueta,
+        essential=(crudo or {}).get("esencial"),
+        mentioned_amount=(crudo or {}).get("monto_mencionado"),
+        pace=(crudo or {}).get("ritmo"),
+        event=INTENT_TO_EVENT.get(etiqueta),
+    )
+
+
+# --- paso 2: redactar ----------------------------------------------------
+
+
+def _fijo(texto, motivo, request, log_path):
+    obs.registrar_redaccion(
+        conv=request.user_id, entrada=request.message, modo=request.mode.value,
+        etiqueta=request.classification.intent, contexto=None, modelo=None,
+        salida_cruda=None, enviado=texto, validadores={}, regla_aplicada=motivo,
         ruta=log_path,
     )
-    return AgentResponse(
-        message=result.enviado, intent="UNKNOWN", event=None, protected_text=True
-    )
+    return AgentReply(message=texto, protected_text=True)
 
 
-def _budget_left_for_one_more_call(started: float) -> bool:
-    """¿Alcanza el presupuesto del turno para otra llamada al modelo?"""
-    settings = get_settings()
-    elapsed = time.monotonic() - started
-    return settings.agent_turn_budget_s - elapsed >= settings.openai_timeout_s
-
-
-def _build_history(request: AgentRequest) -> list[dict]:
-    """Los últimos turnos, para resolver referencias ("sí", "la segunda").
-
-    No es fuente de cifras: `prompts` las enmascara antes de inyectarlas.
-    """
-    return [
-        {"rol": message.role, "texto": message.content}
-        for message in request.recent_history
-    ]
-
-
-def run_turn(request: AgentRequest, call=call_model, log_path: str | None = None):
-    """Un turno completo, sincrónico. `call` se inyecta en los tests."""
+def redactar(request: WriteRequest, call=call_model, log_path=None) -> AgentReply:
+    """La respuesta para Patricia, con el turno ya resuelto por el backend."""
     started = time.monotonic()
-    state = _build_state(request)
-    data = _build_data(request)
-    calculations = _build_calculations(request)
-    history = _build_history(request)
+    etiqueta = request.classification.intent
+    modo = request.mode.value
 
-    triggered, pattern = prefilter.revisar(request.message)
-    context = None
-    metadata = {
-        "nombre": "prefiltro",
-        "temp": None,
-        "latencia_ms": 0,
-        "tokens_in": 0,
-        "tokens_out": 0,
-    }
+    # Capa 3: estos textos no pasan por el modelo. Antes se llamaba igual y la
+    # prosa se descartaba despues: una llamada entera por nada.
+    if etiqueta == Intent.DISTRESS and modo == ConversationMode.SUPPORT:
+        # Ya estaba en APOYO: esto responde a "¿estas a salvo?", no es una
+        # primera deteccion. Repetir el texto de entrada rompe AB7.
+        return _fijo(TEXTOS_FIJOS["angustia_fuerte_en_apoyo"],
+                     "texto_fijo_angustia_fuerte_en_apoyo", request, log_path)
+    if etiqueta in ETIQUETAS_TEXTO_FIJO:
+        return _fijo(TEXTOS_FIJOS[etiqueta], "texto_fijo_" + etiqueta, request, log_path)
+    if etiqueta == Intent.NOT_TEXT:
+        return _fijo(TEXTOS_FIJOS["no_texto"], "texto_fijo_no_texto", request, log_path)
+    if etiqueta == SIN_CLASIFICAR:
+        # El proveedor fallo en el paso 1: no se le pide una redaccion que
+        # tampoco va a llegar.
+        resultado = validators.respaldo_sin_modelo({"modo": modo}, "sin_clasificacion")
+        return _fijo(resultado.enviado, "sin_clasificacion", request, log_path)
 
-    if triggered:
-        # Capa 1: la crisis explícita no pasa por el modelo.
-        raw = {
-            "etiqueta": "angustia_fuerte",
-            "esencial": None,
-            "monto_mencionado": None,
-            "mensaje": None,
-        }
-    else:
-        context = prompts.armar_contexto(
-            state,
-            data,
-            calculations or None,
-            request.previous_intent,
-            request.requested_installment_calculation,
-            history,
-        )
-        try:
-            raw, metadata = call(
-                prompts.ESTATICO,
-                context + "\n\nMENSAJE DE PATRICIA: " + request.message,
-            )
-        except IntegrationError as exc:
-            # El proveedor fallo o el presupuesto se agoto. No se propaga:
-            # hay un texto de respaldo del modo, validado por C, y es mucho
-            # mejor que dejarla sin respuesta. Esta es la capa 4.
-            logger.warning("sin salida del modelo (%s); va el texto de respaldo", exc)
-            return _backup_response(
-                request, state, "sin_salida_del_modelo", started, log_path
-            )
-
-    result = validators.validar(
-        raw, state, data, calculations or None,
+    datos = _datos(request)
+    calculos = _calculos(request)
+    movimientos = prompts.movimientos_para(
+        modo,
+        clasificacion=request.classification,
+        puede_ofrecer=request.can_offer_continue,
+        puede_aclarar=request.can_clarify_route,
+        limites=request.already_stated_limits,
+        escalon_maximo=(request.max_mode_reached or ConversationMode.GREETING).value,
         pidio_calculo_cuota=request.requested_installment_calculation,
+        datos=datos,
+        calculos=calculos,
     )
-    attempts = 1
+    contexto = prompts.contexto_redaccion(
+        datos, calculos, movimientos, request.message, _historial(request.recent_history)
+    )
 
-    if result.enviado is None:
-        # El primer intento falló un chequeo. Un reintento nombrándolo, pero
-        # solo si cabe en el presupuesto: medido contra el proveedor real, un
-        # turno con respaldo y reintento llegó a 16 s y Twilio corta a los
-        # 15. Si no cabe, se re-valida como segundo intento, que devuelve el
-        # texto de respaldo del modo sin llamar a nadie.
-        if _budget_left_for_one_more_call(started):
+    try:
+        crudo, metadata = call(prompts.REDACTOR, contexto, schema=WRITE_SCHEMA)
+    except IntegrationError as exc:
+        logger.warning("sin redaccion (%s); va el texto de respaldo", exc)
+        estado = {"modo": modo, "puedes_ofrecer_continuar": request.can_offer_continue}
+        resultado = validators.respaldo_sin_modelo(estado, "sin_salida_del_modelo")
+        return _fijo(resultado.enviado, "sin_salida_del_modelo", request, log_path)
+
+    estado = {"modo": modo, "puedes_ofrecer_continuar": request.can_offer_continue}
+    resultado = validators.validar(
+        {"etiqueta": etiqueta, "mensaje": (crudo or {}).get("mensaje")},
+        estado, datos, calculos or None,
+    )
+    intentos = 1
+    if resultado.enviado is None:
+        # El primer intento fallo un chequeo. Un reintento nombrandolo, pero
+        # solo si cabe en el presupuesto del turno.
+        if _presupuesto_para_otra_llamada(started):
             try:
-                raw, metadata = call(
-                    prompts.ESTATICO,
-                    context + "\n\nMENSAJE DE PATRICIA: " + request.message,
-                    result.correccion,
+                crudo, metadata = call(
+                    prompts.REDACTOR, contexto, resultado.correccion, schema=WRITE_SCHEMA
                 )
-                attempts = 2
+                intentos = 2
             except IntegrationError as exc:
                 logger.warning("el reintento fallo (%s); va el texto de respaldo", exc)
-                return _backup_response(
-                    request, state, "reintento_sin_salida", started, log_path
-                )
         else:
-            logger.warning(
-                "sin presupuesto para el reintento de validacion; va el texto de respaldo"
-            )
-        result = validators.validar(
-            raw, state, data, calculations or None, intento=2,
-            pidio_calculo_cuota=request.requested_installment_calculation,
+            logger.warning("sin presupuesto para el reintento; va el texto de respaldo")
+        resultado = validators.validar(
+            {"etiqueta": etiqueta, "mensaje": (crudo or {}).get("mensaje")},
+            estado, datos, calculos or None, intento=2,
         )
 
-    if triggered:
-        applied_rule = "prefiltro_" + pattern
-    elif result.override["aplicado"]:
-        applied_rule = result.override["motivo"]
-    else:
-        applied_rule = None
-
-    obs.registrar(
-        conv=request.user_id,
-        intentos=attempts,
+    obs.registrar_redaccion(
+        conv=request.user_id, entrada=request.message, modo=modo, etiqueta=etiqueta,
+        contexto=contexto, modelo=metadata, salida_cruda=crudo,
+        enviado=resultado.enviado, validadores=resultado.validadores,
+        regla_aplicada=resultado.override["motivo"], ruta=log_path, intentos=intentos,
+        movimientos=movimientos, campos=sorted(datos), calculos=sorted(calculos),
         latencia_total_ms=int((time.monotonic() - started) * 1000),
-        turno=0,  # el backend es dueño del contador; acá no se infiere
-        entrada=request.message,
-        prefiltro=(triggered, pattern),
-        estado_antes=state,
-        contexto=context,
-        modelo=metadata,
-        salida_cruda=raw,
-        resultado=result,
-        estado_despues=state,
-        regla_aplicada=applied_rule,
-        ruta=log_path,
     )
-
-    intent = (raw or {}).get("etiqueta") or "UNKNOWN"
-    return AgentResponse(
-        message=result.enviado,
-        intent=intent,
-        event=INTENT_TO_EVENT.get(intent),
-        essential=(raw or {}).get("esencial"),
-        mentioned_amount=(raw or {}).get("monto_mencionado"),
-        protected_text=result.override["aplicado"],
+    return AgentReply(
+        message=resultado.enviado, protected_text=resultado.override["aplicado"]
     )
 
 
@@ -261,9 +259,10 @@ class LlmAgent:
         self._call = call
         self._log_path = log_path
 
-    async def process(self, request: AgentRequest) -> AgentResponse:
-        # La llamada al proveedor es bloqueante: va a un hilo para no
-        # frenar el event loop mientras responde (3-5 s por turno).
-        return await asyncio.to_thread(
-            run_turn, request, self._call, self._log_path
-        )
+    async def classify(self, request: ClassifyRequest) -> Classification:
+        # La llamada al proveedor es bloqueante: va a un hilo para no frenar el
+        # event loop mientras responde.
+        return await asyncio.to_thread(clasificar, request, self._call, self._log_path)
+
+    async def write(self, request: WriteRequest) -> AgentReply:
+        return await asyncio.to_thread(redactar, request, self._call, self._log_path)

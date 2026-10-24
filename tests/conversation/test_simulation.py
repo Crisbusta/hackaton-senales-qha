@@ -6,10 +6,10 @@ import pytest
 
 from app.modules.agent.interface import (
     PREF_SHOW_FINANCIAL_FIGURES,
-    AgentRequest,
-    AgentResponse,
+    AgentReply,
     ConversationMode,
     Intent,
+    WriteRequest,
 )
 from app.modules.banking.provider import MockBankProvider
 from app.modules.conversation.repository import InMemoryConversationRepository
@@ -20,24 +20,20 @@ from app.modules.conversation.simulation import (
     payment_amount,
 )
 from app.modules.whatsapp.schemas import IncomingMessage
+from tests.conftest import TwoStepAgent, turno
 
 USER_ID = "+56912345678"
 
 
-class SpyAgent:
-    def __init__(self, *responses: AgentResponse) -> None:
-        self.responses = list(responses)
-        self.requests: list[AgentRequest] = []
-
-    async def process(self, request: AgentRequest) -> AgentResponse:
-        self.requests.append(request)
-        return self.responses.pop(0) if self.responses else AgentResponse(message="ok")
+class SpyAgent(TwoStepAgent):
+    """El doble compartido de `conftest`, con el nombre que ya usaban estos
+    tests. Recibe pares (Classification, AgentReply): usa `turno()`."""
 
 
 class Conversation:
     """Varios turnos sobre el mismo estado, con el banco de Patricia."""
 
-    def __init__(self, *responses: AgentResponse, mode=ConversationMode.GREETING, **state):
+    def __init__(self, *responses: AgentReply, mode=ConversationMode.GREETING, **state):
         self.agent = SpyAgent(*responses)
         self.repo = InMemoryConversationRepository()
         seeded = asyncio.run(self.repo.get(USER_ID))
@@ -62,7 +58,7 @@ class Conversation:
         return asyncio.run(self.service.handle(incoming))
 
     @property
-    def last_request(self) -> AgentRequest:
+    def last_request(self) -> WriteRequest:
         return self.agent.requests[-1]
 
     @property
@@ -132,7 +128,7 @@ def test_payment_question_moves_to_e4_with_results_in_the_same_turn() -> None:
 
 def test_simulation_figures_pass_the_final_check() -> None:
     reply = "Pagando $100.000 al mes terminas en 13 meses y te ahorras $97.662 en intereses."
-    chat = Conversation(AgentResponse(message=reply), mode=ConversationMode.BALANCE_OVERVIEW)
+    chat = Conversation(turno(reply), mode=ConversationMode.BALANCE_OVERVIEW)
 
     assert chat.send("¿y si pago 100 mil?") == reply
     assert len(chat.agent.requests) == 1
@@ -178,7 +174,7 @@ def test_installment_option_two_then_amount_gives_new_minimum() -> None:
     assert chat.last_request.requested_installment_calculation is True
 
     reply = "Serían $10.000 al mes; tu mínimo pasaría de $74.350 a unos $84.350."
-    chat.agent.responses.append(AgentResponse(message=reply))
+    chat.agent.turns.append(turno(reply))
     assert chat.send("$60.000 en 6 cuotas") == reply
 
     request = chat.last_request
@@ -189,7 +185,7 @@ def test_installment_option_two_then_amount_gives_new_minimum() -> None:
 
 def test_essential_purchase_gets_no_calculation() -> None:
     chat = Conversation(
-        AgentResponse(message="ok", intent=Intent.INSTALLMENT_INTENT, essential=True),
+        turno("ok", intent=Intent.INSTALLMENT_INTENT, essential=True),
         mode=ConversationMode.GREETING,
     )
 
@@ -202,8 +198,8 @@ def test_essential_purchase_gets_no_calculation() -> None:
 
 def test_leaving_the_installment_pause_resets_the_request() -> None:
     chat = Conversation(
-        AgentResponse(message="ok"),
-        AgentResponse(message="ok", intent=Intent.VOLUNTARY_RESUME),
+        turno("ok"),
+        turno("ok", intent=Intent.VOLUNTARY_RESUME),
         mode=ConversationMode.INSTALLMENT_PAUSE,
     )
 
