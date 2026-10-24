@@ -82,7 +82,7 @@ anterior", empieza por ahí.
 | `conversation/` | Orquesta el turno: estado, reglas, precarga, verificación de cifras, simulación, avances | Backend (B). `transitions.py` lo escribió IA (A) |
 | `agent/` | `LlmAgent` (prefiltro de crisis → structured output → textos fijos → validadores), prompts, cliente OpenAI | IA (A). Backend solo toca `factory.py` y `mock.py` |
 | `agent/interface.py` | **Contrato compartido** backend ↔ IA | Ambos: todo cambio se acuerda antes |
-| `banking/` | `BankDataProvider` + `MockBankProvider` (fixture `patricia.json`, banco ficticio) | Backend |
+| `banking/` | `BankDataProvider` + `MockBankProvider` (fixture `patricia.json`, banco ficticio). El fixture coincide con los 12 estados de cuenta PDF de Patricia (2025-11 → 2026-10): tarjeta = estado de 2026-10, cuotas y pagos de cada período, y `statement_history` con los 12 meses | Backend |
 | `statements/` | Parser de estados de cuenta en PDF (`pypdf`, BSD): `parse_statement(bytes)` → mismos campos y formatos que `credit_card_fields()`, con `ABSENT`/`UNRELIABLE`; `validate_statement()` revisa que el resumen sume, el cupo cuadre, etc. En memoria, nunca extrae nombre ni RUT | Backend |
 | `finance/` | Motor determinista (`Decimal`, resultados `int` CLP) | Backend |
 | `dashboard/` | `/dashboard` con autenticación básica; lee `repository.list_all()` | Backend |
@@ -104,6 +104,8 @@ diferida), repositorio, banco y servicio en `app.state`.
   `meses_ahorrados`, `intereses_ahorrados`, `intereses_del_mes`, `faltante_para_gastos_esenciales`,
   `cuota_mensual`.
 - `docs/maquina-de-estados.md`: transiciones y reglas anti-bucle AB1–AB8.
+- Si cambia una cifra de Patricia, debe cambiar en el fixture del banco, en los PDFs de prueba y en
+  `docs/casos_p0.md` a la vez (hay tests que verifican que banco y estado de cuenta coincidan).
 - `docs/casos_p0.md`: casos de prueba de C (los lee el runner; no cambiar el formato de las
   tablas sin ajustar `scripts/p0_runner.py`).
 - `docs/guion-demo.md`: guion, preparativos y plan B de la demo.
