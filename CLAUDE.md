@@ -83,6 +83,7 @@ anterior", empieza por ahí.
 | `agent/` | `LlmAgent` (prefiltro de crisis → structured output → textos fijos → validadores), prompts, cliente OpenAI | IA (A). Backend solo toca `factory.py` y `mock.py` |
 | `agent/interface.py` | **Contrato compartido** backend ↔ IA | Ambos: todo cambio se acuerda antes |
 | `banking/` | `BankDataProvider` + `MockBankProvider` (fixture `patricia.json`, banco ficticio). El fixture coincide con los 12 estados de cuenta PDF de Patricia (2025-11 → 2026-10): tarjeta = estado de 2026-10, cuotas y pagos de cada período, y `statement_history` con los 12 meses | Backend |
+| `statements/` | Parser de estados de cuenta en PDF (`pypdf`, BSD): `parse_statement(bytes)` → mismos campos y formatos que `credit_card_fields()`, con `ABSENT`/`UNRELIABLE`; `validate_statement()` revisa que el resumen sume, el cupo cuadre, etc. En memoria, nunca extrae nombre ni RUT | Backend |
 | `finance/` | Motor determinista (`Decimal`, resultados `int` CLP) | Backend |
 | `dashboard/` | `/dashboard` con autenticación básica; lee `repository.list_all()` | Backend |
 
@@ -162,8 +163,8 @@ no coinciden.
 - **Persistencia en memoria** (`InMemoryConversationRepository`): se pierde con cada deploy o
   `/reiniciar`, no sirve con más de una réplica, y la deduplicación vive lo que vive el proceso.
   La interfaz `ConversationRepository` (incluye `reset` y `list_all`) está lista para PostgreSQL.
-- **PDF (T07) no implementado**: los pasos con PDF del runner se omiten; hoy las cifras vienen
-  solo del banco simulado.
+- **PDF (T07) a medias**: el parser está listo (`statements/`), pero falta descargar el adjunto desde Twilio
+  (requiere `TWILIO_ACCOUNT_SID`) e integrarlo en la conversación; los pasos con PDF del runner se omiten.
 - **Salir de una pausa pidiendo un dato** (no con "hola") todavía responde con el texto de pausa
   en ese turno (solo la retoma hacia E0 se re-pregunta).
 - **Detección de T10 por reglas**: solo con montos explícitos ("100 mil", "$100.000", "80 lucas").
