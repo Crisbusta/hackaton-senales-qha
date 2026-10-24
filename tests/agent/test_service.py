@@ -268,7 +268,9 @@ def test_max_mode_reached_feeds_the_resume(log_path):
         log_path=log_path,
     )
 
-    assert "escalon_maximo: E2" in fake.last_context
+    # El escalon maximo ya no viaja como flag: alimenta el movimiento de
+    # retoma, que es lo que el modelo tiene que hacer con el.
+    assert "escalon_maximo" not in fake.last_context
     assert "tu pago minimo y tu saldo" in fake.last_context
 
 

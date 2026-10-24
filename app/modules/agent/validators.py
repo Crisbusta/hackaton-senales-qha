@@ -1,4 +1,4 @@
-"""Los cinco chequeos deterministas sobre cada salida del modelo (T05).
+"""Los seis chequeos deterministas sobre cada salida del modelo (T05).
 
 No depende del SDK, de la red ni del contrato de T02: se le pasa el dict ya
 parseado. Por eso se puede probar completo antes de que exista el repo.
@@ -9,6 +9,7 @@ Orden de los chequeos, el primero que falla corta:
   3. forma (frases, preguntas, largo, markdown)
   4. movimientos (oferta de seguir cuando no corresponde)
   5. coherencia_etiqueta_modo
+  6. sin_4141_en_cuidadora_agotada
 
 Politica de fallo: un reintento nombrando el chequeo. Si el segundo intento
 tambien falla, sale el texto de respaldo del modo. En angustia_fuerte y
@@ -50,6 +51,11 @@ RE_NUMERO = re.compile(r"\d{1,3}(?:[.\s]\d{3})+|\d+(?:,\d+)?")
 RE_OPCION = re.compile(r"(?m)^\s*[123][.)]\s")
 RE_VINETA = re.compile(r"(?m)^\s*[-*•]\s")
 RE_OFERTA = re.compile(r"seguimos|lo dejamos (aqui|aca)")
+# Una opcion numerada no es una frase: la linea entera sale antes de contar.
+# Quitar solo el prefijo "1." no alcanza, porque el texto de cada opcion
+# tambien termina en punto: medido el 23 oct, las dos opciones de PAUSA_COMPRA
+# dan 6 frases, 4 sin el prefijo y 2 sin la linea.
+RE_LINEA_OPCION = re.compile(r"(?m)^\s*[123][.)].*$")
 
 
 def normalizar(texto):
@@ -164,7 +170,7 @@ def chequeo_frases_prohibidas(mensaje):
 
 
 def contar_frases(mensaje):
-    enmascarado = enmascarar_numeros(mensaje)
+    enmascarado = enmascarar_numeros(RE_LINEA_OPCION.sub("", mensaje))
     partes = [p for p in re.split(r"[.?!…]+", enmascarado) if p.strip()]
     return len(partes)
 

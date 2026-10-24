@@ -108,6 +108,11 @@ diferida), repositorio, banco y servicio en `app.state`.
   `meses_ahorrados`, `intereses_ahorrados`, `intereses_del_mes`, `faltante_para_gastos_esenciales`,
   `cuota_mensual`.
 - `docs/maquina-de-estados.md`: transiciones y reglas anti-bucle AB1–AB8.
+- Las reglas anti-bucle viajan al modelo como **movimientos resueltos**, no como flags: el
+  bloque `ESTADO` del contexto solo lleva `modo`. `puedes_ofrecer_continuar`,
+  `puedes_aclarar_ruta`, `limites_ya_dichos` y `escalon_maximo` los evalúa `armar_contexto()` y
+  se traducen en una instrucción que está o no está. Un flag en el contexto es una condicional
+  que el modelo tiene que interpretar; una instrucción ausente no se interpreta.
 - Si cambia una cifra de Patricia, debe cambiar en el fixture del banco, en los PDFs de prueba y en
   `docs/casos_p0.md` a la vez (hay tests que verifican que banco y estado de cuenta coincidan).
 - `docs/casos_p0.md`: casos de prueba de C (los lee el runner; no cambiar el formato de las
@@ -179,6 +184,16 @@ no coinciden.
 - **Detección de T10 por reglas**: solo con montos explícitos ("100 mil", "$100.000", "80 lucas").
 - **`faltante_para_gastos_esenciales`**: el texto lo define C; el agente no debe mencionarlo hasta
   que esté validado.
+- **El modelo de respaldo es inalcanzable si el principal se cae por timeout**: el respaldo
+  necesita `OPENAI_TIMEOUT_S` libres del presupuesto (`AGENT_TIMEOUT_S − AGENT_BUDGET_MARGIN_S`),
+  y un timeout del principal consume justo ese tiempo. Con los valores por defecto (9 de 11 s) solo
+  cubre los errores rápidos (401, 429 inmediato), nunca los lentos.
+- **La traza no registra lo que de verdad se inyectó**: `observability._campos()` omite el bloque
+  "solo si ella lo pide" (en E0 viajan 9 campos y anota `[]`) y toma su encabezado como si fuera un
+  campo. Quien la lea concluye que el modelo no tenía el dato, y es falso.
+- **El re-llamado al entrar a un modo se pierde por presupuesto**: medido con el modelo real, al
+  entrar a PAUSA_COMPRA el segundo llamado produjo la respuesta correcta (las dos opciones, los
+  seis chequeos en `ok`) y el backend la descartó porque el plazo restante quedó 0,4 s corto.
 - **Precarga**: hay que medir cuánto sobreexpone el modelo los datos del bloque "solo si lo pide"
   (si supera ~10–20 % de los turnos, revisar el enfoque).
 - `railway.json` (Config as Code) está deprecado por Railway a partir del 2026-12-01.

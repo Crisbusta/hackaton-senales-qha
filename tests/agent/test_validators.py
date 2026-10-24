@@ -421,3 +421,43 @@ def test_pausa_compra_solo_autoriza_lo_del_calculo():
 
     assert not r.ok
     assert r.validadores["lista_blanca_numerica"] == "falla"
+
+
+def test_no_es_para_tanto_es_frase_prohibida():
+    """Del prompt del Playground (23 oct): minimiza lo que ella siente y es
+    literal, asi que se puede chequear."""
+    ok, detalle = chequeo_frases_prohibidas("No es para tanto, Patricia.")
+    assert not ok
+    assert "no es para tanto" in detalle
+
+
+def test_las_opciones_numeradas_no_cuentan_como_frases():
+    """Medido el 23 oct: las dos opciones de PAUSA_COMPRA daban 6 frases
+    contra un maximo de 3, asi que toda respuesta con opciones se caia al
+    texto de respaldo. Y quitar solo el prefijo "1." no alcanza: el texto de
+    cada opcion tambien termina en punto (6 -> 4, sigue sobre el limite).
+    """
+    mensaje = (
+        "Gracias por contarmelo antes de decidir. Tu eliges.\n"
+        "1. Esperar diez minutos y ver como te sientes.\n"
+        "2. Ver cuanto le sumaria esa cuota a tu pago minimo."
+    )
+    assert contar_frases(mensaje) == 2
+    assert chequeo_forma(mensaje)[0]
+
+
+def test_tres_caminos_con_salida_pasan_la_forma():
+    """El rescate de "no te entendi" (AB1/AB8) ofrece hasta tres caminos."""
+    mensaje = (
+        "Dime que lo complica.\n"
+        "1. No saber cuanto es.\n"
+        "2. El susto de verlo.\n"
+        "3. O lo dejamos aqui."
+    )
+    assert chequeo_forma(mensaje)[0]
+
+
+def test_las_frases_de_verdad_siguen_contando():
+    """El arreglo no puede relajar el limite para el texto normal."""
+    assert contar_frases("Una. Dos. Tres. Cuatro.") == 4
+    assert not chequeo_forma("Una. Dos. Tres. Cuatro.")[0]

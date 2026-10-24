@@ -10,7 +10,23 @@ es lo que sostiene C01 y C10.
 import json
 import pathlib
 
-from app.modules.agent.prompts import ESTATICO, MODOS, armar_contexto, campos_visibles
+from app.modules.agent.prompts import (
+    ESTATICO,
+    MODOS,
+    MOVIMIENTOS,
+    armar_contexto,
+    campos_visibles,
+)
+from app.modules.agent.validators import normalizar
+
+
+def plano(texto):
+    """Minusculas, sin acentos y en una sola linea.
+
+    El prompt va envuelto a 76 columnas, asi que una frase puede partirse en
+    dos lineas: comparar sin colapsar los saltos da falsos negativos.
+    """
+    return " ".join(normalizar(texto).split())
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
@@ -112,9 +128,16 @@ def test_pausa_activa_sin_cifras_hasta_que_ella_pida_el_calculo():
 
 
 def test_la_oferta_desaparece_cuando_ab2_la_consumio():
+    """AB2 se expresa como movimiento, no como flag en ESTADO.
+
+    Antes el contexto traia `puedes_ofrecer_continuar: no` y ademas omitia el
+    movimiento: dos senales para la misma regla, y una de ellas obligaba al
+    modelo a evaluar una condicion que el codigo ya habia evaluado. Ahora
+    viaja solo el movimiento.
+    """
     assert "seguimos" in ctx("E2").lower()
     assert "seguimos" not in ctx("E2", oferta=False).lower()
-    assert "puedes_ofrecer_continuar: no" in ctx("E2", oferta=False)
+    assert "puedes_ofrecer_continuar" not in ctx("E2", oferta=False)
 
 
 def test_la_linea_de_crisis_se_ofrece_una_vez():
@@ -174,20 +197,48 @@ def test_pausa_tiene_el_texto_literal_de_un_solo_movimiento():
     assert "Ninguno: la respuesta es el texto fijo de rechazo_pausa." in salida
 
 
-def test_puedes_ofrecer_continuar_solo_aparece_en_e1_e2_e3():
-    for modo in ("E1", "E2", "E3"):
-        salida = armar_contexto({"modo": modo, "puedes_ofrecer_continuar": True}, DATOS)
-        assert "puedes_ofrecer_continuar:" in salida, modo
-    for modo in ("E0", "E4", "PAUSA_RECHAZO", "PAUSA_COMPRA", "APOYO", "CIERRE"):
-        salida = armar_contexto({"modo": modo}, DATOS)
-        assert "puedes_ofrecer_continuar:" not in salida, modo
+def test_ningun_flag_de_estado_viaja_al_contexto():
+    """ESTADO es solo el modo.
+
+    `puedes_ofrecer_continuar`, `puedes_aclarar_ruta`, `limites_ya_dichos` y
+    `escalon_maximo` ya estan resueltos en los movimientos. Imprimirlos
+    ademas le pide al modelo que evalue condiciones que el codigo evaluo, y
+    es el hallazgo 6 del diagnostico de codigo (el prompt nunca decia que
+    hacer con ellos).
+    """
+    flags = ("puedes_ofrecer_continuar", "puedes_aclarar_ruta",
+             "limites_ya_dichos", "escalon_maximo")
+    for modo in MODOS:
+        salida = armar_contexto(
+            {"modo": modo, "puedes_ofrecer_continuar": True,
+             "puedes_aclarar_ruta": True, "limites_ya_dichos": [],
+             "escalon_maximo": "E2"},
+            DATOS,
+        )
+        for flag in flags:
+            assert flag not in salida, f"{modo}: {flag}"
+
+
+def test_aclarar_ruta_es_un_movimiento_no_un_flag():
+    """AB1/AB8: o el movimiento esta, o la regla no existe en este turno."""
+    con = armar_contexto({"modo": "E2", "puedes_aclarar_ruta": True}, DATOS)
+    sin = armar_contexto({"modo": "E2", "puedes_aclarar_ruta": False}, DATOS)
+    assert "que lo complica" in con
+    assert "o lo dejamos aqui" in con
+    assert "que lo complica" not in sin
 
 
 # --- cambios del 23 oct, segunda vuelta con C ---------------------------
 
-def test_escalon_maximo_aparece_en_el_estado():
-    salida = armar_contexto({"modo": "E2", "escalon_maximo": "E2"}, DATOS)
-    assert "escalon_maximo: E2" in salida
+def test_escalon_maximo_alimenta_la_retoma_sin_viajar_como_flag():
+    """El escalon maximo sigue decidiendo, pero desde el codigo.
+
+    Viajaba como `escalon_maximo: E2` y el prompt no decia que hacer con el.
+    Lo que de verdad lo usa es MOVIMIENTOS_RETOMA, que el codigo ya resuelve.
+    """
+    salida = armar_contexto({"modo": "E0", "escalon_maximo": "E2"}, DATOS)
+    assert "escalon_maximo" not in salida
+    assert "tu pago minimo y tu saldo" in salida
 
 
 def test_retoma_sin_avance_previo_mantiene_el_e0_normal():
@@ -305,3 +356,70 @@ def test_los_meses_no_se_formatean_como_dinero():
     assert "meses_ahorrados: 19 meses" in salida
     assert "$19" not in salida
     assert "intereses_ahorrados: $123.000" in salida
+
+
+# --- lo que el prompt dejo de decir (causa 1, medida el 23 oct) ----------
+
+
+def test_el_prompt_no_trae_la_frase_de_escape():
+    """"eso lo pueden ver en un momento" venia escrita en el prompt.
+
+    Medido contra el modelo real: con la fecha y el saldo precargados, a
+    "cuanto debo en total?" el modelo contestaba "el total lo podemos ver en
+    un momento". Tener el dato y aplazarlo fue 14 de 21 respuestas
+    problematicas, y la frase estaba en el prompt para que la copiara.
+    """
+    # La frase solo puede existir como contraejemplo. Como instruccion es la
+    # causa 1; en una linea "Malo:" es lo que le ensena a no hacerlo.
+    for linea in ESTATICO.splitlines():
+        if "en un momento" in normalizar(linea):
+            assert linea.strip().startswith("Malo:"), linea
+    assert "aplazarlo es la falla mas comun" in plano(ESTATICO)
+    assert "lo tenias y lo aplazaste" in plano(ESTATICO)
+
+
+def test_e0_no_afirma_que_no_tiene_datos():
+    """En E0 viajan los 9 campos de la Escalera por la precarga del #12.
+
+    El movimiento decia "no tienes ningun dato", que es falso, y empujaba al
+    modelo a la frase generica incluso cuando ella pedia un dato concreto.
+    """
+    movimientos = " ".join(MOVIMIENTOS["E0"])
+    assert "no tienes ningun dato" not in movimientos
+    assert "DATOS_DISPONIBLES" in movimientos
+
+
+def test_el_ejemplo_de_crisis_no_es_cansancio():
+    """El ejemplo de angustia_fuerte era "ya no puedo mas".
+
+    Contradice la regla que C validó en C10: "no puedo mas" sin señales de
+    riesgo es cuidadora_agotada. El ejemplo empujaba a mandar el texto de
+    crisis por cansancio.
+    """
+    assert 'angustia_fuerte          "no quiero seguir viviendo"' in ESTATICO
+    assert "no puedo mas" not in plano(ESTATICO).split("etiquetas")[0]
+    assert "es cuidadora_agotada, no angustia_fuerte" in ESTATICO
+
+
+def test_el_prompt_dice_para_que_existe():
+    """Faltaba el objetivo. Sin el, el modelo no tiene con que resolver lo
+    que la tabla no cubre, y los dos fallos P0 fueron eso."""
+    assert "No eres terapeuta" in ESTATICO
+    assert "no es que pague mas rapido" in plano(ESTATICO)
+    assert "LO QUE SABES DE ALGUIEN COMO PATRICIA" in ESTATICO
+
+
+def test_un_saludo_no_es_ambiguo():
+    """"Hola" salia como `ambiguo`, que incrementa recognition_failures: dos
+    saludos y se disparan las opciones de rescate para alguien que solo
+    saludo. Hasta que exista la etiqueta `saludo` (contrato), va en tangente.
+    """
+    assert "Un saludo suelto NO es ambiguo" in ESTATICO
+    assert 'tangente                 un saludo suelto' in ESTATICO
+
+
+def test_la_salida_de_las_opciones_usa_las_palabras_que_el_codigo_reconoce():
+    """RE_OFERTA reconoce "lo dejamos aqui"; "dejarlo hasta aqui" se le
+    escapa, y entonces la oferta sale sin consumir el contador de AB2."""
+    assert '"o lo dejamos aquí"' in ESTATICO
+    assert "dejarlo hasta aqui" not in plano(ESTATICO)

@@ -49,7 +49,8 @@ MOVIMIENTOS = {
         "Conversar y acusar recibo de lo que ella dijo.",
         "Contarle una sola vez que puedes mirar el estado de cuenta por ella, "
         "de a un dato por vez, y que ella no tiene que abrirlo.",
-        "No menciones ninguna cifra: en este turno no tienes ningun dato.",
+        "Las cifras que puedes decir son las de DATOS_DISPONIBLES y ninguna "
+        "otra. Si ese bloque dice 'ninguno', no menciones ninguna cifra.",
     ],
     "E1": [
         "Contarle la fecha de vencimiento.",
@@ -156,6 +157,15 @@ MODOS_CON_OFERTA = ("E1", "E2", "E3")
 # La linea de crisis se ofrece una vez (AB7).
 MOVIMIENTO_LINEA = "Ofrecer el *4141."
 
+# AB1/AB8: cuando ella ya se perdio una vez. Antes esto viajaba como el flag
+# `puedes_aclarar_ruta` en ESTADO y el prompt no decia que hacer con el, asi
+# que la regla quedaba al criterio del modelo (hallazgo 6 del diagnostico de
+# codigo). Ahora es una instruccion resuelta: o se inyecta, o no existe.
+MOVIMIENTO_ACLARAR = (
+    "Preguntarle UNA vez que lo complica y ofrecerle hasta tres caminos "
+    "numerados, uno por linea, con la salida escrita \"o lo dejamos aqui\"."
+)
+
 
 def campos_visibles(modo, pregunta_previa=None, pidio_calculo_cuota=False):
     """Que campos de datos_pdf puede ver el modelo en este turno."""
@@ -238,16 +248,14 @@ def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
     if modo not in MODOS:
         raise ValueError(f"modo desconocido: {modo!r}")
 
+    # ESTADO es solo el modo. `puedes_ofrecer_continuar`, `puedes_aclarar_ruta`,
+    # `limites_ya_dichos` y `escalon_maximo` NO se imprimen: los cuatro ya estan
+    # resueltos mas abajo, en los movimientos, que es donde el codigo decide. Un
+    # flag en el contexto es una condicional que el modelo tiene que evaluar; una
+    # instruccion inyectada o ausente no se evalua, se hace.
     lineas = ["ESTADO", f"modo: {modo}"]
-    if modo in MODOS_CON_OFERTA:
-        puede_ofrecer = _si_no(estado.get("puedes_ofrecer_continuar", False))
-        lineas.append(f"puedes_ofrecer_continuar: {puede_ofrecer}")
-    puede_aclarar = _si_no(estado.get("puedes_aclarar_ruta", False))
-    lineas.append(f"puedes_aclarar_ruta: {puede_aclarar}")
     limites = estado.get("limites_ya_dichos") or []
-    lineas.append("limites_ya_dichos: [{}]".format(", ".join(limites)))
     escalon_maximo = estado.get("escalon_maximo", "E0")
-    lineas.append(f"escalon_maximo: {escalon_maximo}")
 
     lineas += ["", "DATOS_DISPONIBLES"]
     visibles = campos_visibles(modo, pregunta_previa, pidio_calculo_cuota)
@@ -305,16 +313,14 @@ def armar_contexto(estado, datos, motor=None, pregunta_previa=None,
         movimientos.append(MOVIMIENTO_OFERTA)
     if modo == "APOYO" and "linea_crisis" not in limites:
         movimientos.append(MOVIMIENTO_LINEA)
+    if estado.get("puedes_aclarar_ruta"):
+        movimientos.append(MOVIMIENTO_ACLARAR)
     if modo == "CIERRE":
         movimientos.append(MOVIMIENTO_CIERRE_RETOMA)
     for m in movimientos:
         lineas.append(m if m.startswith("  ") else "- " + m)
 
     return "\n".join(lineas)
-
-
-def _si_no(valor):
-    return "si" if valor else "no"
 
 
 if __name__ == "__main__":

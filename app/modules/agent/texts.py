@@ -74,6 +74,8 @@ FRASES_PALABRA_COMPLETA = ("revisa", "calma")
 FRASES_PROHIBIDAS = [
     # de la ficha de C
     "tranquila",
+    # minimiza lo que ella siente; del prompt del Playground (23 oct)
+    "no es para tanto",
     "no te preocupes",
     "deberias",
     "deberia",
