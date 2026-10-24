@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 > **Si retomas este trabajo sin contexto, empieza por [`docs/handoff.md`](docs/handoff.md):**
-> el estado medido, el roadmap de 7 pasos (2 cerrados) y qué hacer en cada uno de los que
+> el estado medido, el roadmap de 7 pasos (3 cerrados) y qué hacer en cada uno de los que
 > faltan. Dice también qué decisiones **no** son de quien programa, sino de C (la voz) o de B
 > (el contrato).
 

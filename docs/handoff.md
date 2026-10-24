@@ -9,6 +9,51 @@ Cada paso de abajo dice qué hay que hacer, con qué comando se verifica, quién
 puede decidir Claude, y qué trampa tiene. **No ejecutes un paso sin leer antes "Reglas que no se
 rompen"**, al final.
 
+### El primer mensaje, si quieres copiarlo
+
+> Lee `docs/handoff.md` completo y `CLAUDE.md`. Vamos 3 de 7 pasos. Antes de tocar nada, corre
+> `uv run pytest` y `git log --oneline -5` para confirmar que el estado es el que dice el
+> documento. Después dime qué paso conviene hacer primero y por qué, y espera mi ok antes de
+> ejecutarlo.
+
+Ese "espera mi ok" importa: dos de los cinco pasos que quedan **no son decisiones de quien
+programa** (ver pasos 5 y 6).
+
+---
+
+## Cómo se trabajó esto
+
+No es ceremonia: cada regla de acá salió de un error que costó trabajo rehecho.
+
+**Medir antes de arreglar, y medir después.** El 40 % no es una impresión, son 52 turnos
+clasificados a mano. Los siete defectos del paso 1 salieron de *correr* los casos contra el modelo
+real, no de leer el código: la suite pasaba con los siete adentro. Si vas a afirmar que algo
+mejoró, trae el número.
+
+**La traza antes que el código.** Cuando un turno responde mal, la respuesta está en
+`turnos.jsonl`: qué modo recibió `write()`, qué campos y movimientos se inyectaron, qué devolvió
+el modelo y qué validador lo rechazó. Leer el código primero hace perder tiempo adivinando.
+
+**Si el código puede decidirlo, no va en el prompt.** Esta es *la* lección del trabajo. Cada
+condicional de un prompt es una decisión delegada al modelo, y el modelo la cumple a ojo. Tres de
+los siete defectos eran un movimiento que ordenaba algo que los datos no permitían. Cuando dudes,
+la pregunta es "¿el backend ya sabe esto?" — y casi siempre la respuesta es sí.
+
+**Un test por defecto, con la medición en el docstring.** Los tests de este repo dicen *qué pasó
+el día que esto se rompió* ("medido el 24 oct: 327 tokens, 8,2 s, timeout 2 de 3 veces"). Sin eso,
+el test de arriba parece arbitrario y alguien lo borra en seis meses.
+
+**Decir qué no hiciste.** El defecto de la pausa (paso 5) está documentado y sin arreglar porque
+la decisión es de C. Eso es un resultado, no una omisión — pero solo si queda escrito.
+
+**`CLAUDE.md` se actualiza en el mismo PR.** Si cambias el flujo del turno, el contrato o una
+limitación y no lo escribes ahí, la próxima sesión trabaja con información falsa. Pasó en este
+trabajo: una sección quedó referenciada y sin escribir, y hubo que cazarla después.
+
+**Un commit por idea, con el por qué.** Los mensajes de `6827d13` y sus commits previos son la
+documentación real de las decisiones. Si alguien tiene que preguntar "¿por qué está así?", el
+commit debería responderlo.
+
 ---
 
 ## De qué se trata todo esto
@@ -55,7 +100,7 @@ uv run python -m scripts.p0_runner --agent mock                        # sin cos
 
 ---
 
-## El roadmap: 7 pasos, 2 cerrados
+## El roadmap: 7 pasos, 3 cerrados
 
 ### ✅ 1. Correr los casos P0 contra el modelo real
 
@@ -77,27 +122,38 @@ Los siete están en el mensaje del commit `0cee54a`, cada uno con su medición.
 Hecho, por el webhook firmado. Escalera completa, pausa y retomar, compra en cuotas (aritmética
 verificada: 250.000/12 = 20.834 → mínimo 95.184), crisis, audio, identidad, vergüenza, cansancio.
 
-Herramientas para repetirlo (no versionadas a propósito; si las quieres, están en el historial):
+Herramientas para repetirlo, en `scripts/`. **Hablan con el webhook local firmando como lo hace
+Twilio**, así que ejercitan el camino completo —firma, dedup, estado, los dos pasos del agente,
+TwiML— y no un atajo:
 
 ```bash
-uv run uvicorn app.main:app --reload --port 8000
-uv run python -m scripts.conv "/reiniciar" "hola" "cuanto debo" "y si pago 100 mil"
+# 1. el servidor, con la traza encendida (sin ella estás depurando a ciegas)
 AGENT_TRACE_ENABLED=true AGENT_TRACE_PATH=turnos.jsonl uv run uvicorn app.main:app --port 8000
+
+# 2. una conversación completa: cada argumento es un mensaje de ella, en orden
+uv run python -m scripts.conv "/reiniciar" "hola" "cuanto debo" "y si pago 100 mil"
+
+# un solo mensaje
+uv run python -m scripts.wa "cuanto debo?"
+
+# el proveedor a secas, sin Twilio ni webhook: para probar la llave y el esquema
+uv run python scripts/smoke_openai.py "cuanto es mi pago minimo?" E2
 ```
+
+`/reiniciar` borra tu estado y solo funciona desde un número de `DEMO_ADMIN_NUMBERS`; empieza
+siempre con eso, o arrastras la conversación anterior y los modos no son los que crees.
 
 La traza (`turnos.jsonl`) es **la herramienta de depuración**: una línea JSON por paso, con el
 modo, la etiqueta, los campos inyectados, los movimientos resueltos, la salida cruda del modelo y
 qué validador falló. Si un turno responde mal, la respuesta está ahí y no en el código.
 
-### ⬜ 3. Mergear este PR
+### ✅ 3. Mergear el PR
 
-El PR está abierto con cinco commits. **Antes de mergear hay que avisarle a B**: el cambio toca
-`agent/interface.py` (el contrato: `process()` → `classify()` + `write()`) y `conversation/`, que
-son suyos según `CLAUDE.md`.
+Mergeado con squash en `6827d13` (PR #32). `main` corre con el turno en tres pasos.
 
-- **Squash and merge**, como todo en este repo.
-- **No mergear durante la demo**: cada merge a `main` redespliega Railway, y sin `DATABASE_URL`
-  eso borra las conversaciones en memoria. Ver paso 4.
+**Pendiente humano:** avisarle a B que el contrato cambió de forma (`process()` →
+`classify()` + `write()`). No es burocracia: si tiene algo a medio hacer sobre `conversation/` o
+`interface.py`, se le rompe al hacer `git pull` y no va a saber por qué.
 
 ### ⬜ 4. Dos variables de consola (5 minutos, lo más urgente de la lista)
 
